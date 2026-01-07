@@ -1,0 +1,17 @@
+{
+  "name": "backend-proposta",
+  "version": "1.0.0",
+  "description": "Backend para gerar propostas tecnicas automaticamente",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Marcos",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "pdfkit": "^0.15.0"
+  }
+}
