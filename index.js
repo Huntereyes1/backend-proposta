@@ -44,7 +44,7 @@ app.use(express.json());
    CONFIGURAÇÃO DA PASTA DE PDF
 ================================================= */
 
-const PDF_DIR = path.join(__dirname, 'pdf');
+const PDF_DIR = path.join('/tmp', 'pdf');
 
 if (!fs.existsSync(PDF_DIR)) {
   fs.mkdirSync(PDF_DIR);
