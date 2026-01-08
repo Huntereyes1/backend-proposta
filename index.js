@@ -186,7 +186,6 @@ app.post('/gerar-proposta', (req, res) => {
     stream.on('finish', () => {
       ultimoPdfGerado = fileName;
 
-      // 🔥 CACHE-BUSTER APLICADO AQUI
       res.send(
         `✅ Proposta gerada com sucesso!\n\n` +
         `📄 PDF aberto automaticamente pelo sistema:\n` +
@@ -204,13 +203,23 @@ app.post('/gerar-proposta', (req, res) => {
 });
 
 /* ================================
-   PDF ÚLTIMO
+   PDF ÚLTIMO (ANTI-CACHE REAL)
 ================================ */
 app.get('/pdf/ultimo', (req, res) => {
   if (!ultimoPdfGerado) {
     return res.status(404).send('Nenhum PDF gerado ainda.');
   }
-  res.sendFile(path.join(PDF_DIR, ultimoPdfGerado));
+
+  const filePath = path.join(PDF_DIR, ultimoPdfGerado);
+
+  // 🔥 HEADERS QUE OBRIGAM DOWNLOAD NOVO (CELULAR / WEBVIEW)
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+
+  res.sendFile(filePath);
 });
 
 /* ================================
