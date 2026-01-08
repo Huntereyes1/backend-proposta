@@ -66,7 +66,7 @@ app.post('/gerar-proposta', (req, res) => {
       !Number.isFinite(largura) ||
       !Number.isFinite(espessura)
     ) {
-      return res.status(400).send('Dados inválidos');
+      return res.status(400).json({ erro: 'Dados inválidos' });
     }
 
     const area = comprimento * largura;
@@ -106,24 +106,22 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      // 🔥 salva o último PDF
       ultimoPdfGerado = fileName;
 
-      res.send(
-        `✅ Proposta técnica gerada com sucesso.\n\n` +
-        `📐 Área: ${area.toFixed(2)} m²\n` +
-        `📦 Volume: ${volume.toFixed(3)} m³\n\n` +
-        `📄 Clique no link abaixo para abrir o PDF:\n` +
-        `${BASE_URL}/pdf/ultimo`
-      );
+      res.json({
+        sucesso: true,
+        area: area.toFixed(2),
+        volume: volume.toFixed(3),
+        pdf_url: `${BASE_URL}/pdf/ultimo`
+      });
     });
 
     stream.on('error', () => {
-      res.status(500).send('Erro ao gerar PDF');
+      res.status(500).json({ erro: 'Erro ao gerar PDF' });
     });
 
   } catch (err) {
-    res.status(500).send('Erro interno');
+    res.status(500).json({ erro: 'Erro interno' });
   }
 });
 
