@@ -66,7 +66,7 @@ app.post('/gerar-proposta', (req, res) => {
       !Number.isFinite(largura) ||
       !Number.isFinite(espessura)
     ) {
-      return res.status(400).json({ erro: 'Dados inválidos' });
+      return res.status(400).send('❌ Dados inválidos.');
     }
 
     const area = comprimento * largura;
@@ -108,20 +108,22 @@ app.post('/gerar-proposta', (req, res) => {
     stream.on('finish', () => {
       ultimoPdfGerado = fileName;
 
-      res.json({
-        sucesso: true,
-        area: area.toFixed(2),
-        volume: volume.toFixed(3),
-        pdf_url: `${BASE_URL}/pdf/ultimo`
-      });
+      // 🔥 RETORNO EM TEXTO (TYPEBOT-FRIENDLY)
+      res.send(
+        `✅ Proposta gerada com sucesso!\n\n` +
+        `📐 Área: ${area.toFixed(2)} m²\n` +
+        `📦 Volume: ${volume.toFixed(3)} m³\n\n` +
+        `📄 Clique abaixo para abrir o PDF:\n` +
+        `${BASE_URL}/pdf/ultimo`
+      );
     });
 
     stream.on('error', () => {
-      res.status(500).json({ erro: 'Erro ao gerar PDF' });
+      res.status(500).send('❌ Erro ao gerar o PDF.');
     });
 
   } catch (err) {
-    res.status(500).json({ erro: 'Erro interno' });
+    res.status(500).send('❌ Erro interno.');
   }
 });
 
@@ -130,17 +132,12 @@ app.post('/gerar-proposta', (req, res) => {
 ================================ */
 app.get('/pdf/ultimo', (req, res) => {
   if (!ultimoPdfGerado) {
-    return res.status(404).send('Nenhum PDF gerado ainda');
+    return res.status(404).send('Nenhum PDF gerado ainda.');
   }
 
   const filePath = path.join(PDF_DIR, ultimoPdfGerado);
   res.sendFile(filePath);
 });
-
-/* ================================
-   SERVIR PDFs DIRETOS
-================================ */
-app.use('/pdf', express.static(PDF_DIR));
 
 /* ================================
    START
