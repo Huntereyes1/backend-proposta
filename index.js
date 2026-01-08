@@ -6,7 +6,14 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type']
+}));
+
+// ⚠️ responder preflight explicitamente
+app.options('*', cors());
 app.use(bodyParser.json());
 
 /* ================================
