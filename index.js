@@ -19,7 +19,7 @@ app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 /* ================================
-   DIRETÓRIO TEMP
+   DIRETÓRIO TEMP (RAILWAY)
 ================================ */
 const PDF_DIR = '/tmp/pdf';
 if (!fs.existsSync(PDF_DIR)) {
@@ -108,7 +108,7 @@ app.post('/gerar-proposta', (req, res) => {
     stream.on('finish', () => {
       ultimoPdfGerado = fileName;
 
-      // 🔥 RETORNO EM TEXTO (TYPEBOT-FRIENDLY)
+      // 🔥 RETORNO EM TEXTO (PERFEITO PARA TYPEBOT)
       res.send(
         `✅ Proposta gerada com sucesso!\n\n` +
         `📐 Área: ${area.toFixed(2)} m²\n` +
