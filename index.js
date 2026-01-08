@@ -13,13 +13,18 @@ const BASE_URL =
   process.env.BASE_URL || 'https://serene-luck-production.up.railway.app';
 
 /* ================================
-   CORS SIMPLES E ESTÁVEL
+   ARMAZENA O ÚLTIMO PDF GERADO
+================================ */
+let lastPdfFile = null;
+
+/* ================================
+   CORS
 ================================ */
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 /* ================================
-   HEALTHCHECK / RAIZ
+   HEALTHCHECK
 ================================ */
 app.get('/', (req, res) => {
   res.send('Backend de propostas online 🚀');
@@ -48,7 +53,6 @@ app.post('/gerar-proposta', async (req, res) => {
       espessura_cm
     } = req.body;
 
-    // 🔥 CORREÇÃO DEFINITIVA (vírgula → ponto)
     const comprimento = Number(String(comprimento_m).replace(',', '.'));
     const largura = Number(String(largura_m).replace(',', '.'));
     const espessura = Number(String(espessura_cm).replace(',', '.'));
@@ -108,13 +112,16 @@ app.post('/gerar-proposta', async (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      // ✅ RETORNO EM TEXTO PURO (TYPEBOT FRIENDLY)
+      // 🔥 salva o último PDF
+      lastPdfFile = fileName;
+
+      // resposta simples (Typebot friendly)
       res.send(
         `✅ Proposta técnica gerada com sucesso.\n\n` +
         `📐 Área: ${area.toFixed(2)} m²\n` +
         `📦 Volume: ${volume.toFixed(3)} m³\n\n` +
         `📄 Clique no link abaixo para abrir o PDF:\n` +
-        `${BASE_URL}/pdf/${fileName}`
+        `${BASE_URL}/pdf/ultimo`
       );
     });
 
@@ -130,7 +137,18 @@ app.post('/gerar-proposta', async (req, res) => {
 });
 
 /* ================================
-   SERVIR PDFs
+   ENDPOINT FIXO: ÚLTIMO PDF
+================================ */
+app.get('/pdf/ultimo', (req, res) => {
+  if (!lastPdfFile) {
+    return res.status(404).send('Nenhum PDF gerado ainda.');
+  }
+
+  res.sendFile(path.join(PDF_DIR, lastPdfFile));
+});
+
+/* ================================
+   SERVIR PDFs (ACESSO DIRETO)
 ================================ */
 app.use('/pdf', express.static(PDF_DIR));
 
