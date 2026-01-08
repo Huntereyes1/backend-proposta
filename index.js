@@ -27,21 +27,19 @@ if (!fs.existsSync(PDF_DIR)) {
 }
 
 /* ================================
-   CONTROLE DO ÚLTIMO PDF
+   SERVIR PDFs (ANTI-CACHE REAL)
 ================================ */
-let ultimoPdfGerado = null;
-
-/* ================================
-   SERVIR PDFs (ANTI-CACHE)
-================================ */
-app.use('/pdf', express.static(PDF_DIR, {
-  setHeaders: (res) => {
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-  }
-}));
+app.use(
+  '/pdf',
+  express.static(PDF_DIR, {
+    setHeaders: (res) => {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    },
+  })
+);
 
 /* ================================
    HEALTHCHECK
@@ -62,7 +60,7 @@ app.post('/gerar-proposta', (req, res) => {
       nome_material,
       comprimento_m,
       largura_m,
-      espessura_cm
+      espessura_cm,
     } = req.body;
 
     const comprimento = Number(String(comprimento_m).replace(',', '.'));
@@ -78,7 +76,7 @@ app.post('/gerar-proposta', (req, res) => {
       !Number.isFinite(largura) ||
       !Number.isFinite(espessura)
     ) {
-      return res.status(400).send('❌ Dados inválidos.');
+      return res.status(400).send('Dados inválidos');
     }
 
     const area = comprimento * largura;
@@ -141,9 +139,9 @@ app.post('/gerar-proposta', (req, res) => {
     /* ===== TEXTO LEGAL ===== */
     doc.fontSize(10).fillColor('#444444').text(
       'Os valores apresentados foram calculados automaticamente por sistema técnico, ' +
-      'seguindo critérios geométricos padronizados. Este documento destina-se ao apoio ' +
-      'de processos de orçamento e planejamento, não substituindo análises estruturais ' +
-      'normativas ou responsabilidade profissional.',
+        'seguindo critérios geométricos padronizados. Este documento destina-se ao apoio ' +
+        'de processos de orçamento e planejamento, não substituindo análises estruturais ' +
+        'normativas ou responsabilidade profissional.',
       { align: 'justify', lineGap: 4 }
     );
 
@@ -158,33 +156,16 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      ultimoPdfGerado = fileName;
-
-      res.send(
-        `✅ Proposta gerada com sucesso!\n\n` +
-        `📄 Clique para abrir o PDF:\n` +
-        `${BASE_URL}/pdf/${fileName}?t=${Date.now()}`
-      );
+      // 🔥 RETORNO LIMPO PARA O TYPEBOT (URL PURA)
+      res.send(`${BASE_URL}/pdf/${fileName}?t=${Date.now()}`);
     });
 
     stream.on('error', () => {
-      res.status(500).send('❌ Erro ao gerar PDF.');
+      res.status(500).send('Erro ao gerar PDF');
     });
-
   } catch (err) {
-    res.status(500).send('❌ Erro interno.');
+    res.status(500).send('Erro interno');
   }
-});
-
-/* ================================
-   ROTA DE COMPATIBILIDADE
-   /pdf/ultimo (NÃO QUEBRA MAIS)
-================================ */
-app.get('/pdf/ultimo', (req, res) => {
-  if (!ultimoPdfGerado) {
-    return res.status(404).send('Nenhum PDF gerado ainda.');
-  }
-  res.redirect(`/pdf/${ultimoPdfGerado}?t=${Date.now()}`);
 });
 
 /* ================================
