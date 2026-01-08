@@ -7,21 +7,29 @@ const path = require('path');
 const app = express();
 
 /* ================================
-   BASE URL (PROD / RAILWAY)
+   BASE URL (RAILWAY)
 ================================ */
 const BASE_URL =
   process.env.BASE_URL || 'https://serene-luck-production.up.railway.app';
 
 /* ================================
-   ARMAZENA O ÚLTIMO PDF GERADO
-================================ */
-let lastPdfFile = null;
-
-/* ================================
-   CORS
+   MIDDLEWARE
 ================================ */
 app.use(cors({ origin: '*' }));
 app.use(express.json());
+
+/* ================================
+   DIRETÓRIO TEMP
+================================ */
+const PDF_DIR = '/tmp/pdf';
+if (!fs.existsSync(PDF_DIR)) {
+  fs.mkdirSync(PDF_DIR, { recursive: true });
+}
+
+/* ================================
+   CONTROLE DO ÚLTIMO PDF
+================================ */
+let ultimoPdfGerado = null;
 
 /* ================================
    HEALTHCHECK
@@ -31,17 +39,9 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   DIRETÓRIO TEMP (RAILWAY SAFE)
-================================ */
-const PDF_DIR = '/tmp/pdf';
-if (!fs.existsSync(PDF_DIR)) {
-  fs.mkdirSync(PDF_DIR, { recursive: true });
-}
-
-/* ================================
    GERAR PROPOSTA
 ================================ */
-app.post('/gerar-proposta', async (req, res) => {
+app.post('/gerar-proposta', (req, res) => {
   try {
     const {
       nome_empresa,
@@ -69,15 +69,9 @@ app.post('/gerar-proposta', async (req, res) => {
       return res.status(400).send('Dados inválidos');
     }
 
-    /* ================================
-       CÁLCULOS
-    ================================ */
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
-    /* ================================
-       GERAR PDF
-    ================================ */
     const fileName = `proposta_${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
@@ -113,9 +107,8 @@ app.post('/gerar-proposta', async (req, res) => {
 
     stream.on('finish', () => {
       // 🔥 salva o último PDF
-      lastPdfFile = fileName;
+      ultimoPdfGerado = fileName;
 
-      // resposta simples (Typebot friendly)
       res.send(
         `✅ Proposta técnica gerada com sucesso.\n\n` +
         `📐 Área: ${area.toFixed(2)} m²\n` +
@@ -125,35 +118,34 @@ app.post('/gerar-proposta', async (req, res) => {
       );
     });
 
-    stream.on('error', err => {
-      console.error(err);
+    stream.on('error', () => {
       res.status(500).send('Erro ao gerar PDF');
     });
 
   } catch (err) {
-    console.error(err);
     res.status(500).send('Erro interno');
   }
 });
 
 /* ================================
-   ENDPOINT FIXO: ÚLTIMO PDF
+   PDF ÚLTIMO (LINK FIXO)
 ================================ */
 app.get('/pdf/ultimo', (req, res) => {
-  if (!lastPdfFile) {
-    return res.status(404).send('Nenhum PDF gerado ainda.');
+  if (!ultimoPdfGerado) {
+    return res.status(404).send('Nenhum PDF gerado ainda');
   }
 
-  res.sendFile(path.join(PDF_DIR, lastPdfFile));
+  const filePath = path.join(PDF_DIR, ultimoPdfGerado);
+  res.sendFile(filePath);
 });
 
 /* ================================
-   SERVIR PDFs (ACESSO DIRETO)
+   SERVIR PDFs DIRETOS
 ================================ */
 app.use('/pdf', express.static(PDF_DIR));
 
 /* ================================
-   PORTA
+   START
 ================================ */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
