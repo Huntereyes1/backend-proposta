@@ -80,11 +80,9 @@ app.post('/gerar-proposta', (req, res) => {
     doc.pipe(stream);
 
     /* ================================
-       HEADER VISUAL (AUTORIDADE)
+       HEADER VISUAL
     ================================ */
-    doc
-      .rect(0, 0, doc.page.width, 80)
-      .fill('#111111');
+    doc.rect(0, 0, doc.page.width, 80).fill('#111111');
 
     doc
       .fillColor('#FFFFFF')
@@ -100,7 +98,7 @@ app.post('/gerar-proposta', (req, res) => {
     doc.fillColor('#000000');
 
     /* ================================
-       IDENTIFICAÇÃO
+       DADOS DO PROJETO
     ================================ */
     doc.fontSize(12).font('Helvetica-Bold').text('DADOS DO PROJETO');
     doc.moveDown(0.5);
@@ -116,12 +114,10 @@ app.post('/gerar-proposta', (req, res) => {
     doc.moveDown(1);
 
     /* ================================
-       DIMENSÕES (CAIXA)
+       DIMENSÕES
     ================================ */
     const boxY = doc.y;
-    doc
-      .rect(50, boxY, 495, 90)
-      .fill('#F5F5F5');
+    doc.rect(50, boxY, 495, 90).fill('#F5F5F5');
 
     doc
       .fillColor('#000000')
@@ -137,12 +133,10 @@ app.post('/gerar-proposta', (req, res) => {
     doc.moveDown(7);
 
     /* ================================
-       RESULTADOS (HERÓI DO PDF)
+       RESULTADOS
     ================================ */
     const resultY = doc.y;
-    doc
-      .rect(50, resultY, 495, 110)
-      .fill('#EDEDED');
+    doc.rect(50, resultY, 495, 110).fill('#EDEDED');
 
     doc
       .fillColor('#000000')
@@ -161,7 +155,7 @@ app.post('/gerar-proposta', (req, res) => {
     doc.moveDown(8);
 
     /* ================================
-       TEXTO DE AUTORIDADE / SEGURANÇA
+       TEXTO LEGAL
     ================================ */
     doc
       .fontSize(10)
@@ -171,14 +165,11 @@ app.post('/gerar-proposta', (req, res) => {
         'seguindo critérios geométricos padronizados. Este documento destina-se ao apoio ' +
         'de processos de orçamento, planejamento e tomada de decisão técnica, não ' +
         'substituindo análises estruturais normativas ou responsabilidade profissional.',
-        {
-          align: 'justify',
-          lineGap: 4
-        }
+        { align: 'justify', lineGap: 4 }
       );
 
     /* ================================
-       RODAPÉ DE CREDIBILIDADE
+       RODAPÉ
     ================================ */
     doc
       .fontSize(9)
@@ -195,9 +186,11 @@ app.post('/gerar-proposta', (req, res) => {
     stream.on('finish', () => {
       ultimoPdfGerado = fileName;
 
+      // 🔥 CACHE-BUSTER APLICADO AQUI
       res.send(
         `✅ Proposta gerada com sucesso!\n\n` +
-        `📄 PDF aberto automaticamente pelo sistema.`
+        `📄 PDF aberto automaticamente pelo sistema:\n` +
+        `${BASE_URL}/pdf/ultimo?t=${Date.now()}`
       );
     });
 
