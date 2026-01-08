@@ -7,23 +7,7 @@ const path = require('path');
 const app = express();
 
 /* =================================================
-   🔥 CORS MANUAL (resolve origin: null, preflight)
-================================================= */
-
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
-
-/* =================================================
-   CORS PACKAGE (mantido)
+   CORS SIMPLES E ESTÁVEL (SEM DUPLICAÇÃO)
 ================================================= */
 
 app.use(cors({
@@ -32,22 +16,16 @@ app.use(cors({
   allowedHeaders: ['Content-Type']
 }));
 
-app.options('*', cors());
-
-/* =================================================
-   BODY PARSER (CORRETO / NATIVO)
-================================================= */
-
 app.use(express.json());
 
 /* =================================================
-   CONFIGURAÇÃO DA PASTA DE PDF
+   DIRETÓRIO TEMPORÁRIO (RAILWAY SAFE)
 ================================================= */
 
-const PDF_DIR = path.join('/tmp', 'pdf');
+const PDF_DIR = '/tmp/pdf';
 
 if (!fs.existsSync(PDF_DIR)) {
-  fs.mkdirSync(PDF_DIR);
+  fs.mkdirSync(PDF_DIR, { recursive: true });
 }
 
 /* =================================================
@@ -73,43 +51,46 @@ app.post('/gerar-proposta', (req, res) => {
       espessura_cm
     } = req.body;
 
-    const comprimento = parseFloat(comprimento_m);
-    const largura = parseFloat(largura_m);
-    const espessura = parseFloat(espessura_cm);
+    const comprimento = Number(comprimento_m);
+    const largura = Number(largura_m);
+    const espessura = Number(espessura_cm);
 
     if (
       !nome_empresa ||
       !nome_cliente ||
       !nome_material ||
-      isNaN(comprimento) ||
-      isNaN(largura) ||
-      isNaN(espessura)
+      !Number.isFinite(comprimento) ||
+      !Number.isFinite(largura) ||
+      !Number.isFinite(espessura)
     ) {
-      return res.status(400).json({
-        error: 'Dados inválidos. Verifique os campos enviados.'
-      });
+      return res.status(400).json({ error: 'Dados inválidos' });
     }
 
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
-    const doc = new PDFDocument({ margin: 50 });
     const fileName = `proposta_${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const writeStream = fs.createWriteStream(filePath);
-    doc.pipe(writeStream);
+    const doc = new PDFDocument({ margin: 50 });
+    const stream = fs.createWriteStream(filePath);
 
-    doc.fontSize(16).text('Proposta Técnica', { underline: true });
+    doc.pipe(stream);
+
+    doc.fontSize(18).text('Proposta Técnica', { underline: true });
     doc.moveDown();
 
-    doc.fontSize(12).text(`Empresa: ${nome_empresa}`);
+    doc.fontSize(12);
+    doc.text(`Empresa: ${nome_empresa}`);
     doc.text(`Cliente: ${nome_cliente}`);
     doc.text(`Material: ${nome_material}`);
     doc.moveDown();
 
-    doc.text(`Dimensões: ${comprimento} m x ${largura} m`);
+    doc.text(`Comprimento: ${comprimento} m`);
+    doc.text(`Largura: ${largura} m`);
     doc.text(`Espessura: ${espessura} cm`);
+    doc.moveDown();
+
     doc.text(`Área: ${area.toFixed(2)} m²`);
     doc.text(`Volume: ${volume.toFixed(3)} m³`);
     doc.moveDown();
@@ -120,7 +101,7 @@ app.post('/gerar-proposta', (req, res) => {
 
     doc.end();
 
-    writeStream.on('finish', () => {
+    stream.on('finish', () => {
       res.json({
         status: 'ok',
         area: area.toFixed(2),
@@ -129,29 +110,25 @@ app.post('/gerar-proposta', (req, res) => {
       });
     });
 
-    writeStream.on('error', (err) => {
-      console.error(err);
-      res.status(500).json({
-        error: 'Erro ao gerar o PDF'
-      });
+    stream.on('error', (err) => {
+      console.error('Erro ao escrever PDF:', err);
+      res.status(500).json({ error: 'Erro ao gerar PDF' });
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: 'Erro interno ao gerar proposta'
-    });
+    console.error('Erro geral:', err);
+    res.status(500).json({ error: 'Erro interno' });
   }
 });
 
 /* =================================================
-   SERVIR PDFs PUBLICAMENTE
+   SERVIR PDFs
 ================================================= */
 
 app.use('/pdf', express.static(PDF_DIR));
 
 /* =================================================
-   PORTA DINÂMICA (RAILWAY)
+   PORTA (RAILWAY)
 ================================================= */
 
 const PORT = process.env.PORT || 3000;
