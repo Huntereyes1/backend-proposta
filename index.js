@@ -7,6 +7,12 @@ const path = require('path');
 const app = express();
 
 /* ================================
+   BASE URL (PROD / RAILWAY)
+================================ */
+const BASE_URL =
+  process.env.BASE_URL || 'https://serene-luck-production.up.railway.app';
+
+/* ================================
    CORS SIMPLES E ESTÁVEL
 ================================ */
 app.use(cors({ origin: '*' }));
@@ -35,30 +41,39 @@ app.post('/gerar-proposta', async (req, res) => {
     const {
       nome_empresa,
       nome_cliente,
+      tipo_servico,
       nome_material,
       comprimento_m,
       largura_m,
       espessura_cm
     } = req.body;
 
-    const comprimento = Number(comprimento_m);
-    const largura = Number(largura_m);
-    const espessura = Number(espessura_cm);
+    // 🔥 CORREÇÃO DEFINITIVA (vírgula → ponto)
+    const comprimento = Number(String(comprimento_m).replace(',', '.'));
+    const largura = Number(String(largura_m).replace(',', '.'));
+    const espessura = Number(String(espessura_cm).replace(',', '.'));
 
     if (
       !nome_empresa ||
       !nome_cliente ||
+      !tipo_servico ||
       !nome_material ||
       !Number.isFinite(comprimento) ||
       !Number.isFinite(largura) ||
       !Number.isFinite(espessura)
     ) {
-      return res.status(400).json({ error: 'Dados inválidos' });
+      return res.status(400).send('Dados inválidos');
     }
 
+    /* ================================
+       CÁLCULOS
+    ================================ */
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
+    /* ================================
+       GERAR PDF
+    ================================ */
     const fileName = `proposta_${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
@@ -73,6 +88,7 @@ app.post('/gerar-proposta', async (req, res) => {
     doc.fontSize(12);
     doc.text(`Empresa: ${nome_empresa}`);
     doc.text(`Cliente: ${nome_cliente}`);
+    doc.text(`Serviço: ${tipo_servico}`);
     doc.text(`Material: ${nome_material}`);
     doc.moveDown();
 
@@ -92,22 +108,24 @@ app.post('/gerar-proposta', async (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      res.json({
-        status: 'ok',
-        area: area.toFixed(2),
-        volume: volume.toFixed(3),
-        pdf: `/pdf/${fileName}`
-      });
+      // ✅ RETORNO EM TEXTO PURO (TYPEBOT FRIENDLY)
+      res.send(
+        `✅ Proposta técnica gerada com sucesso.\n\n` +
+        `📐 Área: ${area.toFixed(2)} m²\n` +
+        `📦 Volume: ${volume.toFixed(3)} m³\n\n` +
+        `📄 Clique no link abaixo para abrir o PDF:\n` +
+        `${BASE_URL}/pdf/${fileName}`
+      );
     });
 
     stream.on('error', err => {
       console.error(err);
-      res.status(500).json({ error: 'Erro ao gerar PDF' });
+      res.status(500).send('Erro ao gerar PDF');
     });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Erro interno' });
+    res.status(500).send('Erro interno');
   }
 });
 
