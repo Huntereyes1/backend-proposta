@@ -6,38 +6,63 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
+
+/* =================================================
+   🔥 CORS MANUAL (resolve origin: null, preflight)
+================================================= */
+
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+
+  // responder preflight imediatamente
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+/* =================================================
+   CORS PACKAGE (mantido)
+================================================= */
+
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type']
 }));
 
-// ⚠️ responder preflight explicitamente
 app.options('*', cors());
+
+/* =================================================
+   BODY PARSER
+================================================= */
+
 app.use(bodyParser.json());
 
-/* ================================
+/* =================================================
    CONFIGURAÇÃO DA PASTA DE PDF
-================================ */
+================================================= */
 
 const PDF_DIR = path.join(__dirname, 'pdf');
 
-// Cria a pasta /pdf se não existir
 if (!fs.existsSync(PDF_DIR)) {
   fs.mkdirSync(PDF_DIR);
 }
 
-/* ================================
-   ROTA RAIZ (APENAS INFORMATIVA)
-================================ */
+/* =================================================
+   ROTA RAIZ
+================================================= */
 
 app.get('/', (req, res) => {
   res.send('Backend de propostas online 🚀');
 });
 
-/* ================================
+/* =================================================
    ENDPOINT PRINCIPAL
-================================ */
+================================================= */
 
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -49,8 +74,6 @@ app.post('/gerar-proposta', (req, res) => {
       largura_m,
       espessura_cm
     } = req.body;
-
-    /* ---------- SANITIZAÇÃO ---------- */
 
     const comprimento = parseFloat(comprimento_m);
     const largura = parseFloat(largura_m);
@@ -69,12 +92,8 @@ app.post('/gerar-proposta', (req, res) => {
       });
     }
 
-    /* ---------- CÁLCULOS ---------- */
-
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
-
-    /* ---------- GERAÇÃO DO PDF ---------- */
 
     const doc = new PDFDocument({ margin: 50 });
     const fileName = `proposta_${Date.now()}.pdf`;
@@ -103,8 +122,6 @@ app.post('/gerar-proposta', (req, res) => {
 
     doc.end();
 
-    /* ---------- RESPONDE APENAS QUANDO O PDF ESTIVER PRONTO ---------- */
-
     writeStream.on('finish', () => {
       res.json({
         status: 'ok',
@@ -129,15 +146,15 @@ app.post('/gerar-proposta', (req, res) => {
   }
 });
 
-/* ================================
+/* =================================================
    SERVIR PDFs PUBLICAMENTE
-================================ */
+================================================= */
 
 app.use('/pdf', express.static(PDF_DIR));
 
-/* ================================
+/* =================================================
    PORTA DINÂMICA (RAILWAY)
-================================ */
+================================================= */
 
 const PORT = process.env.PORT || 3000;
 
