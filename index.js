@@ -9,20 +9,29 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// 📁 Pasta de PDFs
+/* ================================
+   CONFIGURAÇÃO DA PASTA DE PDF
+================================ */
+
 const PDF_DIR = path.join(__dirname, 'pdf');
 
-// Cria a pasta /pdf se não existir (blindagem total)
+// Cria a pasta /pdf se não existir
 if (!fs.existsSync(PDF_DIR)) {
   fs.mkdirSync(PDF_DIR);
 }
 
-// 🟢 Rota raiz (opcional, mas evita "Cannot GET /")
+/* ================================
+   ROTA RAIZ (APENAS INFORMATIVA)
+================================ */
+
 app.get('/', (req, res) => {
   res.send('Backend de propostas online 🚀');
 });
 
-// Endpoint principal
+/* ================================
+   ENDPOINT PRINCIPAL
+================================ */
+
 app.post('/gerar-proposta', (req, res) => {
   try {
     const {
@@ -34,7 +43,8 @@ app.post('/gerar-proposta', (req, res) => {
       espessura_cm
     } = req.body;
 
-    // 🔒 SANITIZAÇÃO DE NÚMEROS
+    /* ---------- SANITIZAÇÃO ---------- */
+
     const comprimento = parseFloat(comprimento_m);
     const largura = parseFloat(largura_m);
     const espessura = parseFloat(espessura_cm);
@@ -52,16 +62,19 @@ app.post('/gerar-proposta', (req, res) => {
       });
     }
 
-    // 🔢 CÁLCULOS
+    /* ---------- CÁLCULOS ---------- */
+
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
-    // 📄 GERAR PDF
+    /* ---------- GERAÇÃO DO PDF ---------- */
+
     const doc = new PDFDocument({ margin: 50 });
     const fileName = `proposta_${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    doc.pipe(fs.createWriteStream(filePath));
+    const writeStream = fs.createWriteStream(filePath);
+    doc.pipe(writeStream);
 
     doc.fontSize(16).text('Proposta Técnica', { underline: true });
     doc.moveDown();
@@ -83,24 +96,42 @@ app.post('/gerar-proposta', (req, res) => {
 
     doc.end();
 
-    // ✅ RESPOSTA LIMPA
-    res.json({
-      status: 'ok',
-      area: area.toFixed(2),
-      volume: volume.toFixed(3),
-      pdf: `/pdf/${fileName}`
+    /* ---------- RESPONDE APENAS QUANDO O PDF ESTIVER PRONTO ---------- */
+
+    writeStream.on('finish', () => {
+      res.json({
+        status: 'ok',
+        area: area.toFixed(2),
+        volume: volume.toFixed(3),
+        pdf: `/pdf/${fileName}`
+      });
+    });
+
+    writeStream.on('error', (err) => {
+      console.error(err);
+      res.status(500).json({
+        error: 'Erro ao gerar o PDF'
+      });
     });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Erro interno ao gerar proposta' });
+    res.status(500).json({
+      error: 'Erro interno ao gerar proposta'
+    });
   }
 });
 
-// 🌐 Servir PDFs publicamente
+/* ================================
+   SERVIR PDFs PUBLICAMENTE
+================================ */
+
 app.use('/pdf', express.static(PDF_DIR));
 
-// 🚀 PORTA DINÂMICA (Railway)
+/* ================================
+   PORTA DINÂMICA (RAILWAY)
+================================ */
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
