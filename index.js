@@ -1,5 +1,4 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
@@ -16,7 +15,6 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
 
-  // responder preflight imediatamente
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
@@ -37,10 +35,10 @@ app.use(cors({
 app.options('*', cors());
 
 /* =================================================
-   BODY PARSER
+   BODY PARSER (CORRETO / NATIVO)
 ================================================= */
 
-app.use(bodyParser.json());
+app.use(express.json());
 
 /* =================================================
    CONFIGURAÇÃO DA PASTA DE PDF
