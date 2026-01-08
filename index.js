@@ -19,7 +19,7 @@ app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 /* ================================
-   DIRETÓRIO TEMP (RAILWAY)
+   DIRETÓRIO TEMP
 ================================ */
 const PDF_DIR = '/tmp/pdf';
 if (!fs.existsSync(PDF_DIR)) {
@@ -75,129 +75,118 @@ app.post('/gerar-proposta', (req, res) => {
     const fileName = `proposta_${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const doc = new PDFDocument({
-      margin: 50,
-      size: 'A4'
-    });
-
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
     /* ================================
-       HEADER
+       HEADER VISUAL (AUTORIDADE)
     ================================ */
     doc
+      .rect(0, 0, doc.page.width, 80)
+      .fill('#111111');
+
+    doc
+      .fillColor('#FFFFFF')
       .fontSize(20)
-      .fillColor('#111111')
-      .text('PROPOSTA TÉCNICA', { align: 'left' });
+      .text('PROPOSTA TÉCNICA • ORÇAMENTO', 50, 25);
 
     doc
-      .moveDown(0.5)
       .fontSize(10)
-      .fillColor('#666666')
-      .text('Documento gerado automaticamente por sistema técnico.', {
-        align: 'left'
-      });
+      .fillColor('#CCCCCC')
+      .text('Sistema Automatizado de Engenharia', 50, 55);
 
-    doc.moveDown(1.5);
-
-    /* ================================
-       DADOS PRINCIPAIS
-    ================================ */
-    doc
-      .fontSize(12)
-      .fillColor('#000000')
-      .text(`Empresa: `, { continued: true })
-      .font('Helvetica-Bold')
-      .text(nome_empresa);
-
-    doc
-      .font('Helvetica')
-      .text(`Cliente: `, { continued: true })
-      .font('Helvetica-Bold')
-      .text(nome_cliente);
-
-    doc
-      .font('Helvetica')
-      .text(`Serviço: `, { continued: true })
-      .font('Helvetica-Bold')
-      .text(tipo_servico);
-
-    doc
-      .font('Helvetica')
-      .text(`Material: `, { continued: true })
-      .font('Helvetica-Bold')
-      .text(nome_material);
-
-    doc.moveDown(1.5);
+    doc.moveDown(3);
+    doc.fillColor('#000000');
 
     /* ================================
-       DIMENSÕES
+       IDENTIFICAÇÃO
     ================================ */
-    doc
-      .font('Helvetica-Bold')
-      .fontSize(13)
-      .text('DIMENSÕES INFORMADAS');
-
+    doc.fontSize(12).font('Helvetica-Bold').text('DADOS DO PROJETO');
     doc.moveDown(0.5);
 
-    doc
-      .font('Helvetica')
-      .fontSize(11)
-      .text(`Comprimento: ${comprimento} m`)
-      .text(`Largura: ${largura} m`)
-      .text(`Espessura: ${espessura} cm`);
+    doc.font('Helvetica').fontSize(11);
+    doc.text(`Empresa: ${nome_empresa}`);
+    doc.text(`Cliente: ${nome_cliente}`);
+    doc.text(`Serviço: ${tipo_servico}`);
+    doc.text(`Material: ${nome_material}`);
 
-    doc.moveDown(1.5);
+    doc.moveDown(1);
+    doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke('#DDDDDD');
+    doc.moveDown(1);
 
     /* ================================
-       RESULTADOS (DESTAQUE)
+       DIMENSÕES (CAIXA)
     ================================ */
+    const boxY = doc.y;
     doc
+      .rect(50, boxY, 495, 90)
+      .fill('#F5F5F5');
+
+    doc
+      .fillColor('#000000')
+      .font('Helvetica-Bold')
+      .fontSize(12)
+      .text('DIMENSÕES INFORMADAS', 60, boxY + 10);
+
+    doc.font('Helvetica').fontSize(11);
+    doc.text(`Comprimento: ${comprimento} m`, 60, boxY + 35);
+    doc.text(`Largura: ${largura} m`, 60, boxY + 50);
+    doc.text(`Espessura: ${espessura} cm`, 60, boxY + 65);
+
+    doc.moveDown(7);
+
+    /* ================================
+       RESULTADOS (HERÓI DO PDF)
+    ================================ */
+    const resultY = doc.y;
+    doc
+      .rect(50, resultY, 495, 110)
+      .fill('#EDEDED');
+
+    doc
+      .fillColor('#000000')
       .font('Helvetica-Bold')
       .fontSize(13)
-      .text('RESULTADOS TÉCNICOS');
-
-    doc.moveDown(0.8);
+      .text('RESULTADOS TÉCNICOS', 60, resultY + 10);
 
     doc
-      .fontSize(16)
-      .fillColor('#000000')
-      .text(`Área Total: ${area.toFixed(2)} m²`);
+      .fontSize(20)
+      .text(`Área Total: ${area.toFixed(2)} m²`, 60, resultY + 45);
 
     doc
-      .moveDown(0.3)
-      .fontSize(16)
-      .text(`Volume Calculado: ${volume.toFixed(3)} m³`);
+      .fontSize(20)
+      .text(`Volume Calculado: ${volume.toFixed(3)} m³`, 60, resultY + 75);
 
-    doc.moveDown(2);
+    doc.moveDown(8);
 
     /* ================================
-       TEXTO DE AUTORIDADE
+       TEXTO DE AUTORIDADE / SEGURANÇA
     ================================ */
     doc
       .fontSize(10)
       .fillColor('#444444')
       .text(
         'Os valores apresentados foram calculados automaticamente por sistema técnico, ' +
-        'seguindo critérios geométricos padronizados. Este documento visa apoiar ' +
-        'processos de orçamento e planejamento, não substituindo análise estrutural normativa.',
+        'seguindo critérios geométricos padronizados. Este documento destina-se ao apoio ' +
+        'de processos de orçamento, planejamento e tomada de decisão técnica, não ' +
+        'substituindo análises estruturais normativas ou responsabilidade profissional.',
         {
           align: 'justify',
           lineGap: 4
         }
       );
 
-    doc.moveDown(2);
-
     /* ================================
-       RODAPÉ
+       RODAPÉ DE CREDIBILIDADE
     ================================ */
     doc
       .fontSize(9)
-      .fillColor('#888888')
+      .fillColor('#777777')
       .text(
-        `Documento gerado em ${new Date().toLocaleDateString('pt-BR')} • Sistema automático`,
+        `Documento gerado em ${new Date().toLocaleDateString('pt-BR')} • Plataforma Técnica Automatizada`,
+        50,
+        780,
         { align: 'center' }
       );
 
@@ -206,13 +195,9 @@ app.post('/gerar-proposta', (req, res) => {
     stream.on('finish', () => {
       ultimoPdfGerado = fileName;
 
-      // Retorno simples (Typebot não usa isso, mas mantém consistência)
       res.send(
         `✅ Proposta gerada com sucesso!\n\n` +
-        `📐 Área: ${area.toFixed(2)} m²\n` +
-        `📦 Volume: ${volume.toFixed(3)} m³\n\n` +
-        `📄 PDF disponível em:\n` +
-        `${BASE_URL}/pdf/ultimo`
+        `📄 PDF aberto automaticamente pelo sistema.`
       );
     });
 
@@ -226,15 +211,13 @@ app.post('/gerar-proposta', (req, res) => {
 });
 
 /* ================================
-   PDF ÚLTIMO (LINK FIXO)
+   PDF ÚLTIMO
 ================================ */
 app.get('/pdf/ultimo', (req, res) => {
   if (!ultimoPdfGerado) {
     return res.status(404).send('Nenhum PDF gerado ainda.');
   }
-
-  const filePath = path.join(PDF_DIR, ultimoPdfGerado);
-  res.sendFile(filePath);
+  res.sendFile(path.join(PDF_DIR, ultimoPdfGerado));
 });
 
 /* ================================
