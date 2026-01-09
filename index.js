@@ -27,7 +27,7 @@ if (!fs.existsSync(PDF_DIR)) {
 }
 
 /* ================================
-   CONTROLE DO ÚLTIMO PDF (🔥)
+   CONTROLE DO ÚLTIMO PDF
 ================================ */
 let lastPdfFile = null;
 
@@ -39,25 +39,18 @@ app.use(
   express.static(PDF_DIR, {
     setHeaders: (res) => {
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader(
-        'Cache-Control',
-        'no-store, no-cache, must-revalidate, proxy-revalidate'
-      );
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
+      res.setHeader('Cache-Control', 'no-store');
     },
   })
 );
 
 /* ================================
-   ROTA FIXA DE COMPATIBILIDADE 🔥
-   /pdf/proposta.pdf
+   ROTA FIXA
 ================================ */
 app.get('/pdf/proposta.pdf', (req, res) => {
   if (!lastPdfFile) {
     return res.status(404).send('PDF ainda não gerado');
   }
-
   res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
 });
 
@@ -69,7 +62,7 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   GERAR PROPOSTA (TERRAPLANAGEM)
+   GERAR RELATÓRIO
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -100,38 +93,31 @@ app.post('/gerar-proposta', (req, res) => {
     const area = comprimento * largura;
     const volume = area * altura;
 
-    /* ================================
-       PDF ÚNICO
-    ================================ */
-    const fileName = `proposta-${Date.now()}.pdf`;
+    const fileName = `relatorio-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const doc = new PDFDocument({ size: 'A4', margin: 0 });
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    /* ================================
-       TEMPLATE DO CANVA (FUNDO)
-       ⚠ template.png NA MESMA PASTA
-    ================================ */
-    const templatePath = path.join(__dirname, 'template.png');
-    doc.image(templatePath, 0, 0, {
-      width: 595.28,
-      height: 841.89,
+    doc.fontSize(16).text('RELATÓRIO TÉCNICO DE MEDIÇÃO E COMPROVAÇÃO', {
+      align: 'center',
     });
 
-    /* ================================
-       TEXTO SOBRE O TEMPLATE
-    ================================ */
-    doc.fillColor('#000');
+    doc.moveDown();
     doc.fontSize(12);
+    doc.text(`Empresa: ${nome_empresa}`);
+    doc.text(`Responsável: ${nome_cliente}`);
+    doc.text(`Tipo de serviço: ${tipo_servico}`);
 
-    doc.text(nome_empresa, 90, 260);
-    doc.text(nome_cliente, 90, 285);
-    doc.text(tipo_servico, 90, 310);
+    doc.moveDown();
+    doc.text(`Comprimento: ${comprimento} m`);
+    doc.text(`Largura: ${largura} m`);
+    doc.text(`Altura média: ${altura} m`);
 
-    doc.text(`${area.toFixed(2)} m²`, 90, 390);
-    doc.text(`${volume.toFixed(2)} m³`, 90, 420);
+    doc.moveDown();
+    doc.text(`Área calculada: ${area.toFixed(2)} m²`);
+    doc.text(`Volume calculado: ${volume.toFixed(2)} m³`);
 
     doc.end();
 
