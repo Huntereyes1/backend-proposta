@@ -2,70 +2,63 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Proposta Técnica</title>
 
-  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
+  <!-- 🔥 MATA CACHE EM MOBILE -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+
+  <!-- 🔥 FORÇA RELOAD -->
+  <meta http-equiv="refresh" content="0">
 
   <style>
     body {
+      margin: 0;
       font-family: Arial, sans-serif;
       background: #f4f4f4;
-      margin: 0;
-      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
     }
 
-    .container {
-      max-width: 480px;
-      margin: 40px auto;
-      background: #ffffff;
+    .box {
+      background: #fff;
       padding: 30px;
       border-radius: 10px;
       box-shadow: 0 10px 30px rgba(0,0,0,0.1);
       text-align: center;
     }
 
-    h1 {
-      font-size: 20px;
-      margin-bottom: 10px;
-    }
-
-    p {
-      color: #555;
-      font-size: 14px;
-      margin-bottom: 25px;
-    }
-
-    a.button {
+    a {
       display: inline-block;
-      padding: 15px 25px;
+      margin-top: 20px;
+      padding: 14px 22px;
       background: #111;
       color: #fff;
       text-decoration: none;
-      font-size: 16px;
       border-radius: 6px;
+      font-size: 16px;
     }
   </style>
 </head>
-
 <body>
-  <div class="container">
-    <h1>Proposta Técnica Gerada</h1>
-    <p>Clique no botão abaixo para abrir o PDF.</p>
-
-    <a id="pdfLink" class="button" target="_blank">
-      📄 Abrir Proposta em PDF
-    </a>
+  <div class="box">
+    <h2>Proposta pronta</h2>
+    <a id="openPdf">Abrir PDF</a>
   </div>
 
   <script>
     const params = new URLSearchParams(window.location.search);
     const pdf = params.get('pdf');
+
     if (pdf) {
-      document.getElementById('pdfLink').href =
-        `/pdf/${pdf}?t=${Date.now()}`;
+      const url = `/pdf/${pdf}?t=${Date.now()}`;
+      document.getElementById('openPdf').href = url;
+
+      // 🔥 AUTO-OPEN (1 clique total)
+      window.location.href = url;
     }
   </script>
 </body>
