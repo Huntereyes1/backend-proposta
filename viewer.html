@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Proposta Técnica</title>
 
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -43,21 +47,26 @@
       font-size: 16px;
       border-radius: 6px;
     }
-
-    a.button:hover {
-      background: #000;
-    }
   </style>
 </head>
 
 <body>
   <div class="container">
     <h1>Proposta Técnica Gerada</h1>
-    <p>Clique no botão abaixo para abrir o PDF no navegador.</p>
+    <p>Clique no botão abaixo para abrir o PDF.</p>
 
-    <a class="button" href="{{PDF_URL}}" target="_blank">
+    <a id="pdfLink" class="button" target="_blank">
       📄 Abrir Proposta em PDF
     </a>
   </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const pdf = params.get('pdf');
+    if (pdf) {
+      document.getElementById('pdfLink').href =
+        `/pdf/${pdf}?t=${Date.now()}`;
+    }
+  </script>
 </body>
 </html>

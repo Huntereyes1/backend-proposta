@@ -46,6 +46,17 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
+   VIEWER (HTML SEM CACHE)
+================================ */
+app.get('/viewer', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  res.sendFile(path.join(__dirname, 'viewer.html'));
+});
+
+/* ================================
    GERAR PROPOSTA
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
@@ -104,8 +115,11 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      const pdfUrl = `${BASE_URL}/pdf/${fileName}?t=${Date.now()}`;
-      res.send(pdfUrl); // 🔥 STRING PURA
+      const viewerUrl =
+        `${BASE_URL}/viewer?pdf=${fileName}&t=${Date.now()}`;
+
+      // 🔥 STRING PURA para Redirect do Typebot
+      res.send(viewerUrl);
     });
 
     stream.on('error', () => {
