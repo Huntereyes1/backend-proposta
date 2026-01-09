@@ -27,20 +27,116 @@ if (!fs.existsSync(PDF_DIR)) {
 }
 
 /* ================================
-   SERVIR PDFs (ANTES DAS ROTAS)
+   SERVIR PDFs (SEM CACHE)
 ================================ */
-app.use('/pdf', express.static(PDF_DIR, {
-  setHeaders: (res) => {
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Cache-Control', 'no-store');
-  }
-}));
+app.use(
+  '/pdf',
+  express.static(PDF_DIR, {
+    setHeaders: (res) => {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    },
+  })
+);
 
 /* ================================
    HEALTHCHECK
 ================================ */
 app.get('/', (req, res) => {
   res.send('Backend de propostas online 🚀');
+});
+
+/* ================================
+   VIEWER HTML (PÁGINA INTERMEDIÁRIA)
+================================ */
+app.get('/viewer', (req, res) => {
+  const pdfUrl = req.query.pdf;
+
+  if (!pdfUrl) {
+    return res.status(400).send('PDF não informado');
+  }
+
+  res.send(`
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Proposta Técnica</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      font-family: 'Montserrat', sans-serif;
+      background: #0f0f0f;
+      color: #ffffff;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    .card {
+      background: #1a1a1a;
+      padding: 32px;
+      border-radius: 12px;
+      max-width: 420px;
+      width: 90%;
+      text-align: center;
+      box-shadow: 0 0 40px rgba(0,0,0,0.4);
+    }
+
+    h1 {
+      font-size: 20px;
+      margin-bottom: 12px;
+      font-weight: 700;
+    }
+
+    p {
+      font-size: 14px;
+      color: #cccccc;
+      margin-bottom: 24px;
+    }
+
+    a.button {
+      display: inline-block;
+      background: #00c853;
+      color: #000000;
+      text-decoration: none;
+      padding: 14px 22px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .footer {
+      margin-top: 20px;
+      font-size: 11px;
+      color: #777;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Proposta Técnica Gerada</h1>
+    <p>Clique no botão abaixo para abrir o PDF da proposta técnica.</p>
+
+    <a class="button" href="${pdfUrl}" target="_blank">
+      Abrir PDF
+    </a>
+
+    <div class="footer">
+      Sistema Automatizado de Engenharia
+    </div>
+  </div>
+</body>
+</html>
+  `);
 });
 
 /* ================================
@@ -55,7 +151,7 @@ app.post('/gerar-proposta', (req, res) => {
       nome_material,
       comprimento_m,
       largura_m,
-      espessura_cm
+      espessura_cm,
     } = req.body;
 
     const comprimento = Number(comprimento_m);
@@ -71,7 +167,7 @@ app.post('/gerar-proposta', (req, res) => {
       !Number.isFinite(largura) ||
       !Number.isFinite(espessura)
     ) {
-      return res.status(400).send('❌ Dados inválidos.');
+      return res.status(400).send('Dados inválidos');
     }
 
     const area = comprimento * largura;
@@ -84,46 +180,34 @@ app.post('/gerar-proposta', (req, res) => {
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    /* ===== HEADER ===== */
-    doc.rect(0, 0, doc.page.width, 90).fill('#111111');
-    doc.fillColor('#FFFFFF').fontSize(20)
-      .text('PROPOSTA TÉCNICA • ORÇAMENTO', 50, 30);
-    doc.fontSize(10).fillColor('#CCCCCC')
-      .text('Sistema Automatizado de Engenharia', 50, 60);
+    doc.fontSize(18).text('PROPOSTA TÉCNICA', { underline: true });
+    doc.moveDown();
 
-    doc.moveDown(4);
-    doc.fillColor('#000000');
-
-    /* ===== DADOS ===== */
-    doc.font('Helvetica-Bold').fontSize(12).text('DADOS DO PROJETO');
-    doc.moveDown(0.5);
-    doc.font('Helvetica').fontSize(11);
+    doc.fontSize(12);
     doc.text(`Empresa: ${nome_empresa}`);
     doc.text(`Cliente: ${nome_cliente}`);
     doc.text(`Serviço: ${tipo_servico}`);
     doc.text(`Material: ${nome_material}`);
+    doc.moveDown();
 
-    doc.moveDown(1);
-    doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke('#DDDDDD');
-    doc.moveDown(1);
-
-    /* ===== RESULTADOS ===== */
-    doc.fontSize(16).font('Helvetica-Bold')
-      .text(`Área: ${area.toFixed(2)} m²`);
+    doc.text(`Área: ${area.toFixed(2)} m²`);
     doc.text(`Volume: ${volume.toFixed(3)} m³`);
 
     doc.end();
 
     stream.on('finish', () => {
-      const pdfUrl = `${BASE_URL}/pdf/${fileName}?t=${Date.now()}`;
+      const pdfLink = `${BASE_URL}/pdf/${fileName}`;
+      const viewerLink = `${BASE_URL}/viewer?pdf=${encodeURIComponent(
+        pdfLink
+      )}`;
 
-      res.send(pdfUrl); // 🔥 STRING PURA (IDEAL PRO TYPEBOT)
+      // 🔥 STRING PURA — IDEAL PARA TYPEBOT
+      res.send(viewerLink);
     });
 
     stream.on('error', () => {
       res.status(500).send('Erro ao gerar PDF');
     });
-
   } catch (err) {
     res.status(500).send('Erro interno');
   }
