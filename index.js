@@ -27,16 +27,29 @@ if (!fs.existsSync(PDF_DIR)) {
 }
 
 /* ================================
-   SERVIR PDFs (SEM CACHE)
+   🔥 CONTROLE DO ÚLTIMO PDF GERADO
 ================================ */
-app.use('/pdf', express.static(PDF_DIR, {
-  setHeaders: (res) => {
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
+let lastPdfPath = null;
+
+/* ================================
+   SERVIR PDF FIXO (SEM CACHE)
+   👉 SEMPRE ENTREGA O ÚLTIMO PDF
+================================ */
+app.get('/pdf/proposta.pdf', (req, res) => {
+  if (!lastPdfPath || !fs.existsSync(lastPdfPath)) {
+    return res.status(404).send('PDF ainda não gerado');
   }
-}));
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Cache-Control',
+    'no-store, no-cache, must-revalidate, proxy-revalidate'
+  );
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  res.sendFile(lastPdfPath);
+});
 
 /* ================================
    HEALTHCHECK
@@ -46,7 +59,7 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   GERAR PROPOSTA (PDF FIXO)
+   GERAR PROPOSTA (URL FIXA)
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -79,9 +92,11 @@ app.post('/gerar-proposta', (req, res) => {
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
-    // 🔥 NOME FIXO (ESSA É A CHAVE)
-    const fileName = 'proposta.pdf';
-    const filePath = path.join(PDF_DIR, fileName);
+    /* ================================
+       🔥 PDF COM NOME ÚNICO (INTERNO)
+    ================================ */
+    const uniqueName = `proposta-${Date.now()}.pdf`;
+    const filePath = path.join(PDF_DIR, uniqueName);
 
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const stream = fs.createWriteStream(filePath);
@@ -105,8 +120,11 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      // 🔥 URL FIXA QUE SEMPRE ABRE
-      res.send(`${BASE_URL}/pdf/proposta.pdf?t=${Date.now()}`);
+      // 🔥 atualiza o PDF ativo
+      lastPdfPath = filePath;
+
+      // 🔥 RESPONDE COM A MESMA URL DE SEMPRE
+      res.send(`${BASE_URL}/pdf/proposta.pdf`);
     });
 
     stream.on('error', () => {
