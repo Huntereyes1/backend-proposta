@@ -27,6 +27,11 @@ if (!fs.existsSync(PDF_DIR)) {
 }
 
 /* ================================
+   CONTROLE DO ÚLTIMO PDF (🔥)
+================================ */
+let lastPdfFile = null;
+
+/* ================================
    SERVIR PDFs (SEM CACHE)
 ================================ */
 app.use(
@@ -43,6 +48,19 @@ app.use(
     },
   })
 );
+
+/* ================================
+   ROTA FIXA DE COMPATIBILIDADE 🔥
+   /pdf/proposta.pdf
+================================ */
+app.get('/pdf/proposta.pdf', (req, res) => {
+  if (!lastPdfFile) {
+    return res.status(404).send('PDF ainda não gerado');
+  }
+
+  // redireciona sempre para o último PDF real
+  res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
+});
 
 /* ================================
    HEALTHCHECK
@@ -86,7 +104,7 @@ app.post('/gerar-proposta', (req, res) => {
     const volume = area * (espessura / 100);
 
     /* ================================
-       PDF ÚNICO (SEM CACHE)
+       PDF ÚNICO
     ================================ */
     const fileName = `proposta-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
@@ -107,7 +125,6 @@ app.post('/gerar-proposta', (req, res) => {
 
     /* ================================
        TEXTO SOBRE O TEMPLATE
-       (AJUSTE UMA VEZ SÓ)
     ================================ */
     doc.fillColor('#000');
     doc.fontSize(12);
@@ -123,6 +140,10 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
+      // 🔥 guarda o último PDF
+      lastPdfFile = fileName;
+
+      // 🔥 retorna URL ÚNICA (mobile perfeito)
       res.send(`${BASE_URL}/pdf/${fileName}`);
     });
 
