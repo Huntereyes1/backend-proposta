@@ -46,7 +46,7 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   GERAR PROPOSTA (PDF DIRETO)
+   GERAR PROPOSTA (PDF FIXO)
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -79,8 +79,8 @@ app.post('/gerar-proposta', (req, res) => {
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
-    // 🔥 NOME SIMPLES (como antes)
-    const fileName = `proposta_${Date.now()}.pdf`;
+    // 🔥 NOME FIXO (ESSA É A CHAVE)
+    const fileName = 'proposta.pdf';
     const filePath = path.join(PDF_DIR, fileName);
 
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -105,9 +105,8 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      // 🔥 RETORNA O PDF DIRETO (UX 1 CLIQUE)
-      const pdfUrl = `${BASE_URL}/pdf/${fileName}?t=${Date.now()}`;
-      res.send(pdfUrl);
+      // 🔥 URL FIXA QUE SEMPRE ABRE
+      res.send(`${BASE_URL}/pdf/proposta.pdf?t=${Date.now()}`);
     });
 
     stream.on('error', () => {
