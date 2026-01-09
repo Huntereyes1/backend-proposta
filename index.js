@@ -3,6 +3,7 @@ const cors = require('cors');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 
@@ -46,18 +47,7 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   VIEWER (HTML SEM CACHE)
-================================ */
-app.get('/viewer', (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-
-  res.sendFile(path.join(__dirname, 'viewer.html'));
-});
-
-/* ================================
-   GERAR PROPOSTA
+   GERAR PROPOSTA (ID ÚNICO)
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -90,7 +80,9 @@ app.post('/gerar-proposta', (req, res) => {
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
-    const fileName = `proposta_${Date.now()}.pdf`;
+    // 🔥 ID ÚNICO POR PROPOSTA
+    const proposalId = crypto.randomUUID();
+    const fileName = `proposta_${proposalId}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -115,11 +107,8 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      const viewerUrl =
-        `${BASE_URL}/viewer?pdf=${fileName}&t=${Date.now()}`;
-
-      // 🔥 STRING PURA para Redirect do Typebot
-      res.send(viewerUrl);
+      // 🔥 URL FIXA + ID (Typebot friendly)
+      res.send(`${BASE_URL}/abrir-proposta/${proposalId}`);
     });
 
     stream.on('error', () => {
@@ -129,6 +118,21 @@ app.post('/gerar-proposta', (req, res) => {
   } catch (err) {
     res.status(500).send('Erro interno');
   }
+});
+
+/* ================================
+   ABRIR PROPOSTA (ROTA FIXA)
+================================ */
+app.get('/abrir-proposta/:id', (req, res) => {
+  const { id } = req.params;
+  const filePath = path.join(PDF_DIR, `proposta_${id}.pdf`);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send('Proposta não encontrada');
+  }
+
+  // 🔥 REDIRECT DIRETO PARA O PDF
+  res.redirect(`/pdf/proposta_${id}.pdf?t=${Date.now()}`);
 });
 
 /* ================================
