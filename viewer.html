@@ -4,62 +4,20 @@
   <meta charset="UTF-8" />
   <title>Proposta Técnica</title>
 
-  <!-- 🔥 MATA CACHE EM MOBILE -->
-  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <!-- mata cache mobile -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-
-  <!-- 🔥 FORÇA RELOAD -->
-  <meta http-equiv="refresh" content="0">
-
-  <style>
-    body {
-      margin: 0;
-      font-family: Arial, sans-serif;
-      background: #f4f4f4;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-    }
-
-    .box {
-      background: #fff;
-      padding: 30px;
-      border-radius: 10px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-      text-align: center;
-    }
-
-    a {
-      display: inline-block;
-      margin-top: 20px;
-      padding: 14px 22px;
-      background: #111;
-      color: #fff;
-      text-decoration: none;
-      border-radius: 6px;
-      font-size: 16px;
-    }
-  </style>
 </head>
-<body>
-  <div class="box">
-    <h2>Proposta pronta</h2>
-    <a id="openPdf">Abrir PDF</a>
-  </div>
 
-  <script>
-    const params = new URLSearchParams(window.location.search);
-    const pdf = params.get('pdf');
+<body style="margin:0">
 
-    if (pdf) {
-      const url = `/pdf/${pdf}?t=${Date.now()}`;
-      document.getElementById('openPdf').href = url;
+  <iframe
+    src="/pdf/template.pdf?t=<?= Date.now() ?>"
+    width="100%"
+    height="100vh"
+    style="border:none"
+  ></iframe>
 
-      // 🔥 AUTO-OPEN (1 clique total)
-      window.location.href = url;
-    }
-  </script>
 </body>
 </html>
