@@ -27,29 +27,22 @@ if (!fs.existsSync(PDF_DIR)) {
 }
 
 /* ================================
-   🔥 CONTROLE DO ÚLTIMO PDF GERADO
+   SERVIR PDFs (SEM CACHE)
 ================================ */
-let lastPdfPath = null;
-
-/* ================================
-   SERVIR PDF FIXO (SEM CACHE)
-   👉 SEMPRE ENTREGA O ÚLTIMO PDF
-================================ */
-app.get('/pdf/proposta.pdf', (req, res) => {
-  if (!lastPdfPath || !fs.existsSync(lastPdfPath)) {
-    return res.status(404).send('PDF ainda não gerado');
-  }
-
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader(
-    'Cache-Control',
-    'no-store, no-cache, must-revalidate, proxy-revalidate'
-  );
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-
-  res.sendFile(lastPdfPath);
-});
+app.use(
+  '/pdf',
+  express.static(PDF_DIR, {
+    setHeaders: (res) => {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+      );
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    },
+  })
+);
 
 /* ================================
    HEALTHCHECK
@@ -59,7 +52,7 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   GERAR PROPOSTA (URL FIXA)
+   GERAR PROPOSTA (PDF SEM REPETIR)
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -70,7 +63,7 @@ app.post('/gerar-proposta', (req, res) => {
       nome_material,
       comprimento_m,
       largura_m,
-      espessura_cm
+      espessura_cm,
     } = req.body;
 
     const comprimento = Number(comprimento_m);
@@ -93,7 +86,7 @@ app.post('/gerar-proposta', (req, res) => {
     const volume = area * (espessura / 100);
 
     /* ================================
-       🔥 PDF COM NOME ÚNICO (INTERNO)
+       🔥 PDF COM NOME ÚNICO
     ================================ */
     const uniqueName = `proposta-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, uniqueName);
@@ -113,24 +106,22 @@ app.post('/gerar-proposta', (req, res) => {
     doc.text(`Área: ${area.toFixed(2)} m²`);
     doc.text(`Volume: ${volume.toFixed(3)} m³`);
     doc.moveDown();
-    doc.fontSize(10).text(
-      'Documento gerado automaticamente. Não substitui análise estrutural normativa.'
-    );
+    doc
+      .fontSize(10)
+      .text(
+        'Documento gerado automaticamente. Não substitui análise estrutural normativa.'
+      );
 
     doc.end();
 
     stream.on('finish', () => {
-      // 🔥 atualiza o PDF ativo
-      lastPdfPath = filePath;
-
-      // 🔥 RESPONDE COM A MESMA URL DE SEMPRE
-      res.send(`${BASE_URL}/pdf/proposta.pdf`);
+      // 🔥 RETORNA URL ÚNICA (MOBILE SEM CACHE)
+      res.send(`${BASE_URL}/pdf/${uniqueName}`);
     });
 
     stream.on('error', () => {
       res.status(500).send('Erro ao gerar PDF');
     });
-
   } catch (err) {
     res.status(500).send('Erro interno');
   }
