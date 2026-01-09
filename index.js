@@ -58,7 +58,6 @@ app.get('/pdf/proposta.pdf', (req, res) => {
     return res.status(404).send('PDF ainda não gerado');
   }
 
-  // redireciona sempre para o último PDF real
   res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
 });
 
@@ -66,11 +65,11 @@ app.get('/pdf/proposta.pdf', (req, res) => {
    HEALTHCHECK
 ================================ */
 app.get('/', (req, res) => {
-  res.send('Backend de propostas online 🚀');
+  res.send('Backend de comprovação online 🚜');
 });
 
 /* ================================
-   GERAR PROPOSTA (COM TEMPLATE CANVA)
+   GERAR PROPOSTA (TERRAPLANAGEM)
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -78,30 +77,28 @@ app.post('/gerar-proposta', (req, res) => {
       nome_empresa,
       nome_cliente,
       tipo_servico,
-      nome_material,
       comprimento_m,
       largura_m,
-      espessura_cm,
+      altura_m,
     } = req.body;
 
     const comprimento = Number(comprimento_m);
     const largura = Number(largura_m);
-    const espessura = Number(espessura_cm);
+    const altura = Number(altura_m);
 
     if (
       !nome_empresa ||
       !nome_cliente ||
       !tipo_servico ||
-      !nome_material ||
       !Number.isFinite(comprimento) ||
       !Number.isFinite(largura) ||
-      !Number.isFinite(espessura)
+      !Number.isFinite(altura)
     ) {
       return res.status(400).send('❌ Dados inválidos.');
     }
 
     const area = comprimento * largura;
-    const volume = area * (espessura / 100);
+    const volume = area * altura;
 
     /* ================================
        PDF ÚNICO
@@ -132,18 +129,14 @@ app.post('/gerar-proposta', (req, res) => {
     doc.text(nome_empresa, 90, 260);
     doc.text(nome_cliente, 90, 285);
     doc.text(tipo_servico, 90, 310);
-    doc.text(nome_material, 90, 335);
 
     doc.text(`${area.toFixed(2)} m²`, 90, 390);
-    doc.text(`${volume.toFixed(3)} m³`, 90, 420);
+    doc.text(`${volume.toFixed(2)} m³`, 90, 420);
 
     doc.end();
 
     stream.on('finish', () => {
-      // 🔥 guarda o último PDF
       lastPdfFile = fileName;
-
-      // 🔥 retorna URL ÚNICA (mobile perfeito)
       res.send(`${BASE_URL}/pdf/${fileName}`);
     });
 
