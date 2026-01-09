@@ -27,11 +27,6 @@ if (!fs.existsSync(PDF_DIR)) {
 }
 
 /* ================================
-   🔥 CONTROLE DO ÚLTIMO PDF
-================================ */
-let lastPdfFile = null;
-
-/* ================================
    SERVIR PDFs (SEM CACHE)
 ================================ */
 app.use(
@@ -50,19 +45,6 @@ app.use(
 );
 
 /* ================================
-   ROTA DE COMPATIBILIDADE 🔥
-   /pdf/proposta.pdf
-================================ */
-app.get('/pdf/proposta.pdf', (req, res) => {
-  if (!lastPdfFile) {
-    return res.status(404).send('PDF ainda não gerado');
-  }
-
-  // 🔥 REDIRECIONA PARA O PDF REAL (URL ÚNICA)
-  res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
-});
-
-/* ================================
    HEALTHCHECK
 ================================ */
 app.get('/', (req, res) => {
@@ -70,7 +52,7 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   GERAR PROPOSTA
+   GERAR PROPOSTA (COM TEMPLATE CANVA)
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -104,40 +86,44 @@ app.post('/gerar-proposta', (req, res) => {
     const volume = area * (espessura / 100);
 
     /* ================================
-       🔥 PDF COM NOME ÚNICO
+       PDF ÚNICO (SEM CACHE)
     ================================ */
-    const uniqueName = `proposta-${Date.now()}.pdf`;
-    const filePath = path.join(PDF_DIR, uniqueName);
+    const fileName = `proposta-${Date.now()}.pdf`;
+    const filePath = path.join(PDF_DIR, fileName);
 
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const doc = new PDFDocument({ size: 'A4', margin: 0 });
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    doc.fontSize(18).text('PROPOSTA TÉCNICA', { underline: true });
-    doc.moveDown();
+    /* ================================
+       TEMPLATE DO CANVA (FUNDO)
+       ⚠ template.png NA MESMA PASTA
+    ================================ */
+    const templatePath = path.join(__dirname, 'template.png');
+    doc.image(templatePath, 0, 0, {
+      width: 595.28,
+      height: 841.89,
+    });
+
+    /* ================================
+       TEXTO SOBRE O TEMPLATE
+       (AJUSTE UMA VEZ SÓ)
+    ================================ */
+    doc.fillColor('#000');
     doc.fontSize(12);
-    doc.text(`Empresa: ${nome_empresa}`);
-    doc.text(`Cliente: ${nome_cliente}`);
-    doc.text(`Serviço: ${tipo_servico}`);
-    doc.text(`Material: ${nome_material}`);
-    doc.moveDown();
-    doc.text(`Área: ${area.toFixed(2)} m²`);
-    doc.text(`Volume: ${volume.toFixed(3)} m³`);
-    doc.moveDown();
-    doc
-      .fontSize(10)
-      .text(
-        'Documento gerado automaticamente. Não substitui análise estrutural normativa.'
-      );
+
+    doc.text(nome_empresa, 90, 260);
+    doc.text(nome_cliente, 90, 285);
+    doc.text(tipo_servico, 90, 310);
+    doc.text(nome_material, 90, 335);
+
+    doc.text(`${area.toFixed(2)} m²`, 90, 390);
+    doc.text(`${volume.toFixed(3)} m³`, 90, 420);
 
     doc.end();
 
     stream.on('finish', () => {
-      // 🔥 guarda o último PDF
-      lastPdfFile = uniqueName;
-
-      // 🔥 retorna URL ÚNICA (mobile perfeito)
-      res.send(`${BASE_URL}/pdf/${uniqueName}`);
+      res.send(`${BASE_URL}/pdf/${fileName}`);
     });
 
     stream.on('error', () => {
