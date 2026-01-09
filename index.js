@@ -3,7 +3,6 @@ const cors = require('cors');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 const app = express();
 
@@ -47,7 +46,7 @@ app.get('/', (req, res) => {
 });
 
 /* ================================
-   GERAR PROPOSTA (ID ÚNICO)
+   GERAR PROPOSTA (PDF DIRETO)
 ================================ */
 app.post('/gerar-proposta', (req, res) => {
   try {
@@ -80,9 +79,8 @@ app.post('/gerar-proposta', (req, res) => {
     const area = comprimento * largura;
     const volume = area * (espessura / 100);
 
-    // 🔥 ID ÚNICO POR PROPOSTA
-    const proposalId = crypto.randomUUID();
-    const fileName = `proposta_${proposalId}.pdf`;
+    // 🔥 NOME SIMPLES (como antes)
+    const fileName = `proposta_${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -107,8 +105,9 @@ app.post('/gerar-proposta', (req, res) => {
     doc.end();
 
     stream.on('finish', () => {
-      // 🔥 URL FIXA + ID (Typebot friendly)
-      res.send(`${BASE_URL}/abrir-proposta/${proposalId}`);
+      // 🔥 RETORNA O PDF DIRETO (UX 1 CLIQUE)
+      const pdfUrl = `${BASE_URL}/pdf/${fileName}?t=${Date.now()}`;
+      res.send(pdfUrl);
     });
 
     stream.on('error', () => {
@@ -118,21 +117,6 @@ app.post('/gerar-proposta', (req, res) => {
   } catch (err) {
     res.status(500).send('Erro interno');
   }
-});
-
-/* ================================
-   ABRIR PROPOSTA (ROTA FIXA)
-================================ */
-app.get('/abrir-proposta/:id', (req, res) => {
-  const { id } = req.params;
-  const filePath = path.join(PDF_DIR, `proposta_${id}.pdf`);
-
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).send('Proposta não encontrada');
-  }
-
-  // 🔥 REDIRECT DIRETO PARA O PDF
-  res.redirect(`/pdf/proposta_${id}.pdf?t=${Date.now()}`);
 });
 
 /* ================================
