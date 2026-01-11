@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
-const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
+const puppeteer = require('puppeteer');
 
 const app = express();
 
@@ -45,7 +45,7 @@ app.use(
 );
 
 /* ================================
-   ROTA FIXA
+   ROTA FIXA (GOAT 🐐)
 ================================ */
 app.get('/pdf/proposta.pdf', (req, res) => {
   if (!lastPdfFile) {
@@ -58,13 +58,13 @@ app.get('/pdf/proposta.pdf', (req, res) => {
    HEALTHCHECK
 ================================ */
 app.get('/', (req, res) => {
-  res.send('Backend de comprovação online 🚜');
+  res.send('Backend de Comprovação – Terraplanagem 🚜');
 });
 
 /* ================================
-   GERAR RELATÓRIO
+   GERAR PROPOSTA (HTML → PDF)
 ================================ */
-app.post('/gerar-proposta', (req, res) => {
+app.post('/gerar-proposta', async (req, res) => {
   try {
     const {
       nome_empresa,
@@ -90,46 +90,47 @@ app.post('/gerar-proposta', (req, res) => {
       return res.status(400).send('❌ Dados inválidos.');
     }
 
-    const area = comprimento * largura;
-    const volume = area * altura;
+    const area = (comprimento * largura).toFixed(2);
+    const volume = (area * altura).toFixed(2);
 
-    const fileName = `relatorio-${Date.now()}.pdf`;
+    /* ================================
+       MONTA HTML
+    ================================ */
+    let html = fs.readFileSync(
+      path.join(__dirname, 'template.html'),
+      'utf8'
+    );
+
+    html = html
+      .replace('{{nome_empresa}}', nome_empresa)
+      .replace('{{nome_cliente}}', nome_cliente)
+      .replace('{{tipo_servico}}', tipo_servico)
+      .replace('{{comprimento}}', comprimento)
+      .replace('{{largura}}', largura)
+      .replace('{{altura}}', altura)
+      .replace('{{area}}', area)
+      .replace('{{volume}}', volume);
+
+    /* ================================
+       GERAR PDF
+    ================================ */
+    const fileName = `proposta-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const stream = fs.createWriteStream(filePath);
-    doc.pipe(stream);
-
-    doc.fontSize(16).text('RELATÓRIO TÉCNICO DE MEDIÇÃO E COMPROVAÇÃO', {
-      align: 'center',
+    const browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
 
-    doc.moveDown();
-    doc.fontSize(12);
-    doc.text(`Empresa: ${nome_empresa}`);
-    doc.text(`Responsável: ${nome_cliente}`);
-    doc.text(`Tipo de serviço: ${tipo_servico}`);
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.pdf({ path: filePath, format: 'A4' });
+    await browser.close();
 
-    doc.moveDown();
-    doc.text(`Comprimento: ${comprimento} m`);
-    doc.text(`Largura: ${largura} m`);
-    doc.text(`Altura média: ${altura} m`);
+    lastPdfFile = fileName;
 
-    doc.moveDown();
-    doc.text(`Área calculada: ${area.toFixed(2)} m²`);
-    doc.text(`Volume calculado: ${volume.toFixed(2)} m³`);
-
-    doc.end();
-
-    stream.on('finish', () => {
-      lastPdfFile = fileName;
-      res.send(`${BASE_URL}/pdf/${fileName}`);
-    });
-
-    stream.on('error', () => {
-      res.status(500).send('Erro ao gerar PDF');
-    });
+    res.send(`${BASE_URL}/pdf/${fileName}`);
   } catch (err) {
+    console.error(err);
     res.status(500).send('Erro interno');
   }
 });

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      font-family: 'Montserrat', Arial, sans-serif;
+      margin: 40px;
+      color: #111;
+    }
+
+    .title {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    .box {
+      border: 1px solid #ddd;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .row {
+      margin-bottom: 6px;
+    }
+
+    .label {
+      font-weight: 600;
+    }
+
+    .result {
+      margin-top: 20px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .footer {
+      margin-top: 40px;
+      font-size: 10px;
+      color: #666;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="title">PROPOSTA TÉCNICA DE TERRAPLANAGEM</div>
+
+  <div class="box">
+    <div class="row"><span class="label">Empresa:</span> {{nome_empresa}}</div>
+    <div class="row"><span class="label">Responsável:</span> {{nome_cliente}}</div>
+    <div class="row"><span class="label">Serviço:</span> {{tipo_servico}}</div>
+  </div>
+
+  <div class="box">
+    <div class="row">Comprimento: {{comprimento}} m</div>
+    <div class="row">Largura: {{largura}} m</div>
+    <div class="row">Altura média: {{altura}} m</div>
+  </div>
+
+  <div class="result">
+    Área calculada: {{area}} m²<br/>
+    Volume calculado: {{volume}} m³
+  </div>
+
+  <div class="footer">
+    Documento gerado automaticamente – Sistema Técnico
+  </div>
+
+</body>
+</html>
