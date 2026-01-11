@@ -4,69 +4,77 @@
   <meta charset="UTF-8" />
   <style>
     body {
-      font-family: 'Montserrat', Arial, sans-serif;
-      margin: 40px;
-      color: #111;
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 60px;
+      color: #0f2f1f;
     }
 
-    .title {
-      font-size: 22px;
-      font-weight: 700;
-      margin-bottom: 20px;
+    h1 {
       text-align: center;
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 50px;
+      text-transform: uppercase;
     }
 
-    .box {
-      border: 1px solid #ddd;
-      padding: 16px;
+    h2 {
+      font-size: 16px;
+      margin-top: 40px;
       margin-bottom: 16px;
     }
 
-    .row {
-      margin-bottom: 6px;
+    .section {
+      margin-bottom: 40px;
+    }
+
+    .field {
+      font-size: 13px;
+      margin-bottom: 10px;
     }
 
     .label {
       font-weight: 600;
-    }
-
-    .result {
-      margin-top: 20px;
-      font-size: 16px;
-      font-weight: 700;
+      display: inline-block;
+      width: 140px;
     }
 
     .footer {
-      margin-top: 40px;
-      font-size: 10px;
-      color: #666;
+      margin-top: 80px;
+      font-size: 11px;
       text-align: center;
+      color: #333;
     }
   </style>
 </head>
+
 <body>
 
-  <div class="title">PROPOSTA TÉCNICA DE TERRAPLANAGEM</div>
+  <h1>PROPOSTA TÉCNICA DE TERRAPLANAGEM</h1>
 
-  <div class="box">
-    <div class="row"><span class="label">Empresa:</span> {{nome_empresa}}</div>
-    <div class="row"><span class="label">Responsável:</span> {{nome_cliente}}</div>
-    <div class="row"><span class="label">Serviço:</span> {{tipo_servico}}</div>
+  <div class="section">
+    <h2>Dados da Proposta</h2>
+
+    <div class="field"><span class="label">Empresa:</span> {{nome_empresa}}</div>
+    <div class="field"><span class="label">Responsável:</span> {{nome_cliente}}</div>
+    <div class="field"><span class="label">Serviço:</span> {{tipo_servico}}</div>
   </div>
 
-  <div class="box">
-    <div class="row">Comprimento: {{comprimento}} m</div>
-    <div class="row">Largura: {{largura}} m</div>
-    <div class="row">Altura média: {{altura}} m</div>
-  </div>
+  <div class="section">
+    <h2>Detalhes do Serviço</h2>
 
-  <div class="result">
-    Área calculada: {{area}} m²<br/>
-    Volume calculado: {{volume}} m³
+    <div class="field"><span class="label">Comprimento:</span> {{comprimento}} m</div>
+    <div class="field"><span class="label">Largura:</span> {{largura}} m</div>
+    <div class="field"><span class="label">Altura média:</span> {{altura}} m</div>
+
+    <br>
+
+    <div class="field"><span class="label">Área calculada:</span> {{area}} m²</div>
+    <div class="field"><span class="label">Volume calculado:</span> {{volume}} m³</div>
   </div>
 
   <div class="footer">
-    Documento gerado automaticamente – Sistema Técnico
+    Este orçamento é uma estimativa e está sujeito a alterações após avaliação detalhada do local.<br><br>
+    Para mais informações, entre em contato.
   </div>
 
 </body>
