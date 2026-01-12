@@ -1,3 +1,69 @@
+const express = require('express');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const puppeteer = require('puppeteer');
+
+const app = express();
+
+/* ================================
+   BASE URL
+================================ */
+const BASE_URL =
+  process.env.BASE_URL || 'https://serene-luck-production.up.railway.app';
+
+/* ================================
+   MIDDLEWARE
+================================ */
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+
+/* ================================
+   DIRETÓRIO PDF
+================================ */
+const PDF_DIR = '/tmp/pdf';
+if (!fs.existsSync(PDF_DIR)) {
+  fs.mkdirSync(PDF_DIR, { recursive: true });
+}
+
+/* ================================
+   CONTROLE DO ÚLTIMO PDF
+================================ */
+let lastPdfFile = null;
+
+/* ================================
+   SERVIR PDFs (SEM CACHE)
+================================ */
+app.use(
+  '/pdf',
+  express.static(PDF_DIR, {
+    setHeaders: (res) => {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+    },
+  })
+);
+
+/* ================================
+   ROTA FIXA (GOAT 🐐)
+================================ */
+app.get('/pdf/proposta.pdf', (req, res) => {
+  if (!lastPdfFile) {
+    return res.status(404).send('PDF ainda não gerado');
+  }
+  res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
+});
+
+/* ================================
+   HEALTHCHECK
+================================ */
+app.get('/', (req, res) => {
+  res.send('Backend de Comprovação – Terraplanagem 🚜');
+});
+
+/* ================================
+   GERAR PROPOSTA (HTML → PDF)
+================================ */
 app.post('/gerar-proposta', async (req, res) => {
   try {
     const {
@@ -67,4 +133,12 @@ app.post('/gerar-proposta', async (req, res) => {
     console.error(err);
     res.status(500).send('Erro interno');
   }
+});
+
+/* ================================
+   START
+================================ */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log('Servidor rodando na porta', PORT);
 });
