@@ -35,7 +35,7 @@
     .label {
       font-weight: 600;
       display: inline-block;
-      width: 140px;
+      width: 180px;
     }
 
     .footer {
@@ -69,7 +69,20 @@
     <br>
 
     <div class="field"><span class="label">Área calculada:</span> {{area}} m²</div>
-    <div class="field"><span class="label">Volume calculado:</span> {{volume}} m³</div>
+    <div class="field"><span class="label">Volume executado:</span> {{volume}} m³</div>
+  </div>
+
+  <div class="section">
+    <h2>Análise de Medição</h2>
+
+    <div class="field"><span class="label">Volume considerado:</span> {{volume_aprovado}} m³</div>
+    <div class="field"><span class="label">Diferença apurada:</span> {{diferenca}} m³</div>
+
+    <br>
+
+    <div class="field">
+      Com base nas dimensões reais executadas, observa-se divergência entre o volume apurado e o volume considerado na medição, caracterizando diferença técnica passível de contestação.
+    </div>
   </div>
 
   <div class="footer">
