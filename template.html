@@ -6,19 +6,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
     *{box-sizing:border-box}
-    body{font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Inter, Arial; margin:0; color:#111;}
-    .wrap{width:760px; margin:40px auto; padding:28px; border:1px solid #111;}
-    .row{display:flex; justify-content:space-between; gap:16px;}
-    .muted{color:#444; font-size:12px; letter-spacing:.2px;}
-    h1{margin:0 0 8px 0; font-size:20px; font-weight:700;}
-    h2{margin:16px 0 6px; font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.8px;}
-    .badge{font-size:28px; font-weight:800; padding:6px 10px; border:1px solid #111; display:inline-block; margin-top:4px;}
-    .box{border:1px solid #111; padding:12px; margin-top:10px;}
-    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;}
-    ul{margin:6px 0 0 18px; padding:0;}
-    li{margin:4px 0;}
-    .hr{height:1px; background:#111; margin:16px 0;}
-    .foot{font-size:11px; line-height:1.45;}
+    body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Inter,Arial;margin:0;color:#111}
+    .wrap{width:760px;margin:40px auto;padding:28px;border:1px solid #111}
+    .row{display:flex;justify-content:space-between;gap:16px}
+    .muted{color:#444;font-size:12px;letter-spacing:.2px}
+    h1{margin:0 0 8px 0;font-size:20px;font-weight:700}
+    h2{margin:16px 0 6px;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.8px}
+    .badge{font-size:28px;font-weight:800;padding:6px 10px;border:1px solid #111;display:inline-block;margin-top:4px}
+    .box{border:1px solid #111;padding:12px;margin-top:10px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+    ul{margin:6px 0 0 18px;padding:0}
+    li{margin:4px 0}
+    .hr{height:1px;background:#111;margin:16px 0}
+    .foot{font-size:11px;line-height:1.45}
   </style>
 </head>
 <body>
@@ -26,7 +26,7 @@
     <div class="row">
       <div>
         <div class="muted">TRIBUNAL / VARA</div>
-        <h1>{{tribunal_vara}}</h1>
+        <h1>{{tribunal}} — {{vara}}</h1>
       </div>
       <div style="text-align:right">
         <div class="muted">DATA DO ATO</div>
@@ -51,11 +51,11 @@
     <h2>PROVA (VERIFICAÇÃO OFICIAL)</h2>
     <div class="box">
       <div class="muted">ID/URL DO ATO</div>
-      <div class="mono">{{link_oficial}}</div>
+      <div class="mono">{{id_ato}}</div>
       <div class="hr"></div>
       <div class="muted">Como verificar:</div>
       <ul>
-        <li>Acesse o link acima (portal do Tribunal) ou pesquise pelo nº do processo.</li>
+        <li>Acesse o portal do Tribunal (ou pesquise pelo nº do processo).</li>
         <li>Confirme a <b>expedição de e-Alvará/levantamento</b> e o <b>nome da PF</b>.</li>
       </ul>
     </div>
