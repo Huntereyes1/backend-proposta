@@ -1,4 +1,5 @@
-// index.js — TORRE PF e-Alvará (TRT/TJ) — v3.4 (template.html)
+// index.js — TORRE PF e-Alvará (TRT/TJ) — v3.5 (template.html + parse data + piso configurável)
+
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -10,6 +11,9 @@ const app = express();
 const BASE_URL = process.env.BASE_URL || "https://serene-luck-production.up.railway.app";
 const PDF_DIR = "/tmp/pdf";
 const TEMPLATE_PATH = path.join(__dirname, "template.html");
+
+// Piso do ticket (centavos). Para testar, defina MIN_TICKET_CENTS=0 no Railway.
+const MIN_TICKET_CENTS = Number(process.env.MIN_TICKET_CENTS || 2_000_000);
 
 // ===== Boot =====
 app.use(cors({ origin: "*" }));
@@ -27,7 +31,9 @@ app.use("/pdf", express.static(PDF_DIR, {
   },
 }));
 
-app.get("/", (_req, res) => res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v3.4"));
+app.get("/", (_req, res) =>
+  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v3.5")
+);
 
 app.get("/pdf/proposta.pdf", (_req, res) => {
   if (!lastPdfFile) return res.status(404).send("PDF ainda não gerado.");
@@ -45,7 +51,24 @@ const centavosToBRL = (c) =>
     minimumFractionDigits: 2,
   });
 
-const safe = (s = "") => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const safe = (s = "") =>
+  String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+// Aceita "DD/MM/YYYY" ou ISO; cai fora se vazio/ruim.
+function parseDataPtBRorISO(s) {
+  if (!s) return "";
+  const str = String(s).trim();
+  // DD/MM/YYYY
+  const m = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (m) {
+    const [_, dd, mm, yyyy] = m;
+    const iso = `${yyyy}-${mm}-${dd}T00:00:00`;
+    const d = new Date(iso);
+    return isNaN(d) ? "" : d;
+  }
+  const d = new Date(str);
+  return isNaN(d) ? "" : d;
+}
 
 function renderFromTemplate(vars) {
   let html = fs.readFileSync(TEMPLATE_PATH, "utf8");
@@ -64,25 +87,38 @@ async function gerarDossieHandler(req, res) {
       tipo_ato, banco_pagador, id_ato, fee_percent
     } = req.body || {};
 
-    // regras TORRE
     const isPF = !!pf_nome && !/advogad|patron/i.test(String(pf_nome));
+
+    // Prioriza valor_centavos; se faltar, usa valor_reais "60.000,00"
     const cents = Number.isFinite(valor_centavos)
       ? Number(valor_centavos)
       : Math.round(toNumber(valor_reais || 0) * 100);
 
-    const hasTicket = Number.isFinite(cents) && cents >= 2_000_000; // ≥ R$20k
+    const hasTicket = Number.isFinite(cents) && cents >= MIN_TICKET_CENTS;
     const atoPronto = /(alvar[aá]|levantamento|libera[cç][aã]o)/i.test(String(tipo_ato || ""));
 
     if (!tribunal || !processo || !isPF || !hasTicket || !atoPronto) {
       return res.status(400).json({
         ok: false,
         error: "Dados inválidos: exigimos PF nominal, ticket ≥ R$ 20k e ato pronto.",
-        debug: { tribunal, processo, pf_nome, valor_centavos: cents, tipo_ato, hasTicket, atoPronto }
+        debug: {
+          tribunal,
+          processo,
+          pf_nome,
+          valor_centavos_recebido: valor_centavos,
+          valor_centavos_calculado: cents,
+          piso_minimo: MIN_TICKET_CENTS,
+          tipo_ato,
+          hasTicket,
+          atoPronto
+        }
       });
     }
 
     const valorBRL = centavosToBRL(cents);
-    const dataFmt = data_ato ? new Date(data_ato).toLocaleDateString("pt-BR") : "";
+
+    const d = parseDataPtBRorISO(data_ato);
+    const dataFmt = d ? d.toLocaleDateString("pt-BR") : "";
 
     const html = renderFromTemplate({
       tribunal: safe(tribunal),
@@ -100,7 +136,9 @@ async function gerarDossieHandler(req, res) {
     const fileName = `dossie-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const browser = await puppeteer.launch({
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
     await page.pdf({
@@ -115,7 +153,11 @@ async function gerarDossieHandler(req, res) {
     return res.json({ ok: true, url: `${BASE_URL}/pdf/proposta.pdf` });
   } catch (e) {
     console.error("Erro /gerar-dossie:", e);
-    return res.status(500).json({ ok: false, error: "Erro interno ao gerar PDF.", cause: String(e && e.message || e) });
+    return res.status(500).json({
+      ok: false,
+      error: "Erro interno ao gerar PDF.",
+      cause: String(e && e.message || e)
+    });
   }
 }
 
