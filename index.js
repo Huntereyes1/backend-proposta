@@ -1,137 +1,166 @@
-const express = require('express');
-const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
-const puppeteer = require('puppeteer');
+// index.js — TORRE PF e-Alvará (TRT/TJ) — v3 usando template_dossie.html
+
+const express = require("express");
+const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
+const puppeteer = require("puppeteer");
 
 const app = express();
 
 /* ================================
-   BASE URL
+   CONFIG
 ================================ */
 const BASE_URL =
-  process.env.BASE_URL || 'https://serene-luck-production.up.railway.app';
+  process.env.BASE_URL || "https://serene-luck-production.up.railway.app";
+const PDF_DIR = "/tmp/pdf";
+const TEMPLATE_PATH = path.join(__dirname, "template_dossie.html");
 
 /* ================================
-   MIDDLEWARE
+   BOOT
 ================================ */
-app.use(cors({ origin: '*' }));
-app.use(express.json());
+app.use(cors({ origin: "*" }));
+app.use(express.json({ limit: "1mb" }));
+if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 
-/* ================================
-   DIRETÓRIO PDF
-================================ */
-const PDF_DIR = '/tmp/pdf';
-if (!fs.existsSync(PDF_DIR)) {
-  fs.mkdirSync(PDF_DIR, { recursive: true });
-}
-
-/* ================================
-   CONTROLE DO ÚLTIMO PDF
-================================ */
 let lastPdfFile = null;
 
-/* ================================
-   SERVIR PDFs (SEM CACHE)
-================================ */
 app.use(
-  '/pdf',
+  "/pdf",
   express.static(PDF_DIR, {
     setHeaders: (res) => {
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
     },
   })
 );
 
-/* ================================
-   ROTA FIXA (GOAT 🐐)
-================================ */
-app.get('/pdf/proposta.pdf', (req, res) => {
-  if (!lastPdfFile) {
-    return res.status(404).send('PDF ainda não gerado');
-  }
-  res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
+app.get("/pdf/proposta.pdf", (_req, res) => {
+  if (!lastPdfFile) return res.status(404).send("PDF ainda não gerado.");
+  return res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
+});
+
+app.get("/", (_req, res) => {
+  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ)");
 });
 
 /* ================================
-   HEALTHCHECK
+   HELPERS
 ================================ */
-app.get('/', (req, res) => {
-  res.send('Backend de Comprovação – Terraplanagem 🚜');
-});
+const toNumber = (v) =>
+  typeof v === "number"
+    ? v
+    : Number(String(v || "").replace(/\./g, "").replace(",", "."));
+
+const centavosToBRL = (c) =>
+  (Math.round(c) / 100).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    minimumFractionDigits: 2,
+  });
+
+function safe(str = "") {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function renderFromTemplate(vars) {
+  let html = fs.readFileSync(TEMPLATE_PATH, "utf8");
+  Object.entries(vars).forEach(([k, v]) => {
+    html = html.replaceAll(`{{${k}}}`, v == null ? "" : String(v));
+  });
+  return html;
+}
 
 /* ================================
-   GERAR PROPOSTA (HTML → PDF)
+   ROTA: GERAR DOSSIÊ (Typebot → aqui)
 ================================ */
-app.post('/gerar-proposta', async (req, res) => {
+app.post("/gerar-dossie", async (req, res) => {
   try {
     const {
-      nome_empresa,
-      nome_cliente,
-      tipo_servico,
-      comprimento_m,
-      largura_m,
-      altura_m,
-      volume_aprovado_m3
-    } = req.body;
+      tribunal,
+      vara,
+      processo,
+      data_ato,
+      pf_nome,
+      valor_centavos,   // opcional se mandar valor_reais
+      valor_reais,      // string "60.000,00" (fallback)
+      tipo_ato,         // "e-Alvará", "Levantamento", etc.
+      banco_pagador,    // "Banco do Brasil", "Caixa", etc.
+      link_oficial,     // URL/ID verificável
+      id_ato,           // opcional
+      fee_percent       // "10–20" (string)
+    } = req.body || {};
 
-    const comprimento = Number(comprimento_m);
-    const largura = Number(largura_m);
-    const altura = Number(altura_m);
-    const volumeAprovado = Number(volume_aprovado_m3);
+    // Regras TORRE (válidas antes de gastar Puppeteer)
+    const isPF = !!pf_nome && !/advogad|patron/i.test(String(pf_nome));
+    const cents =
+      Number.isFinite(valor_centavos)
+        ? Number(valor_centavos)
+        : Math.round(toNumber(valor_reais || 0) * 100);
 
-    if (
-      !nome_empresa ||
-      !nome_cliente ||
-      !tipo_servico ||
-      !Number.isFinite(comprimento) ||
-      !Number.isFinite(largura) ||
-      !Number.isFinite(altura) ||
-      !Number.isFinite(volumeAprovado)
-    ) {
-      return res.status(400).send('❌ Dados inválidos.');
-    }
-
-    const area = (comprimento * largura).toFixed(2);
-    const volume = (area * altura).toFixed(2);
-    const diferenca = (volume - volumeAprovado).toFixed(2);
-
-    let html = fs.readFileSync(
-      path.join(__dirname, 'template.html'),
-      'utf8'
+    const hasTicket = Number.isFinite(cents) && cents >= 2000000; // ≥ R$ 20k
+    const atoPronto = /(alvar[aá]|levantamento|libera[cç][aã]o)/i.test(
+      (tipo_ato || "") + " " + (link_oficial || "")
     );
 
-    html = html
-      .replace('{{nome_empresa}}', nome_empresa)
-      .replace('{{nome_cliente}}', nome_cliente)
-      .replace('{{tipo_servico}}', tipo_servico)
-      .replace('{{comprimento}}', comprimento)
-      .replace('{{largura}}', largura)
-      .replace('{{altura}}', altura)
-      .replace('{{area}}', area)
-      .replace('{{volume}}', volume)
-      .replace('{{volume_aprovado}}', volumeAprovado)
-      .replace('{{diferenca}}', diferenca);
+    if (!tribunal || !processo || !isPF || !hasTicket || !atoPronto) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          "Dados inválidos: exigimos PF nominal, ticket ≥ R$ 20k e ato pronto (e-alvará/levantamento).",
+      });
+    }
 
-    const fileName = `proposta-${Date.now()}.pdf`;
+    const valorBRL = centavosToBRL(cents);
+    const dataFmt = data_ato
+      ? new Date(data_ato).toLocaleDateString("pt-BR")
+      : "";
+
+    // Monta variáveis do template
+    const html = renderFromTemplate({
+      tribunal: safe(tribunal),
+      vara: safe(vara || ""),
+      processo: safe(processo),
+      data_ato: safe(dataFmt),
+      pf_nome: safe(pf_nome),
+      valor_brl: safe(valorBRL),
+      tipo_ato: safe(tipo_ato || "e-Alvará"),
+      banco_pagador: safe(banco_pagador || "Banco do Brasil / Caixa (conforme ato)"),
+      link_oficial: safe(link_oficial || ""),
+      id_ato: safe(id_ato || ""),
+      fee_percent: safe(fee_percent || "10–20"),
+    });
+
+    const fileName = `dossie-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
     const browser = await puppeteer.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
-
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    await page.pdf({ path: filePath, format: 'A4' });
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.pdf({
+      path: filePath,
+      format: "A4",
+      margin: { top: "14mm", bottom: "14mm", left: "14mm", right: "14mm" },
+      printBackground: true,
+    });
     await browser.close();
 
     lastPdfFile = fileName;
 
-    res.send(`${BASE_URL}/pdf/${fileName}`);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Erro interno');
+    return res.json({
+      ok: true,
+      url: `${BASE_URL}/pdf/proposta.pdf` // redirect fixo
+    });
+  } catch (e) {
+    console.error("Erro /gerar-dossie:", e);
+    return res.status(500).json({ ok: false, error: "Erro interno ao gerar PDF." });
   }
 });
 
@@ -140,5 +169,5 @@ app.post('/gerar-proposta', async (req, res) => {
 ================================ */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log('Servidor rodando na porta', PORT);
+  console.log("Servidor rodando na porta", PORT);
 });

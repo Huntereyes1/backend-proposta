@@ -1,96 +1,90 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
+  <title>Dossiê — e-Alvará PF</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    body {
-      font-family: Arial, Helvetica, sans-serif;
-      margin: 60px;
-      color: #0f2f1f;
-    }
-
-    h1 {
-      text-align: center;
-      font-size: 24px;
-      font-weight: 700;
-      margin-bottom: 50px;
-      text-transform: uppercase;
-    }
-
-    h2 {
-      font-size: 16px;
-      margin-top: 40px;
-      margin-bottom: 16px;
-    }
-
-    .section {
-      margin-bottom: 40px;
-    }
-
-    .field {
-      font-size: 13px;
-      margin-bottom: 10px;
-    }
-
-    .label {
-      font-weight: 600;
-      display: inline-block;
-      width: 180px;
-    }
-
-    .footer {
-      margin-top: 80px;
-      font-size: 11px;
-      text-align: center;
-      color: #333;
-    }
+    *{box-sizing:border-box}
+    body{font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Inter,Arial; margin:0; color:#111;}
+    .wrap{width:760px; margin:40px auto; padding:28px; border:1px solid #111;}
+    .row{display:flex; justify-content:space-between; gap:16px;}
+    .muted{color:#444; font-size:12px; letter-spacing:.2px;}
+    h1{margin:0 0 8px 0; font-size:20px; font-weight:700;}
+    h2{margin:16px 0 6px; font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.8px;}
+    .badge{font-size:28px; font-weight:800; padding:6px 10px; border:1px solid #111; display:inline-block; margin-top:4px;}
+    .box{border:1px solid #111; padding:12px; margin-top:10px;}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;}
+    ul{margin:6px 0 0 18px; padding:0;}
+    li{margin:4px 0;}
+    .hr{height:1px; background:#111; margin:16px 0;}
+    .foot{font-size:11px; line-height:1.45;}
   </style>
 </head>
-
 <body>
+  <div class="wrap">
+    <div class="row">
+      <div>
+        <div class="muted">TRIBUNAL / VARA</div>
+        <h1>{{tribunal}}{{vara ? '' : ''}} {{vara}}</h1>
+      </div>
+      <div style="text-align:right">
+        <div class="muted">DATA DO ATO</div>
+        <div class="mono">{{data_ato}}</div>
+      </div>
+    </div>
 
-  <h1>PROPOSTA TÉCNICA DE TERRAPLANAGEM</h1>
+    <div class="row" style="margin-top:10px;">
+      <div>
+        <div class="muted">PROCESSO</div>
+        <div class="mono">{{processo}}</div>
+      </div>
+      <div style="text-align:right">
+        <div class="muted">BENEFICIÁRIO (PF)</div>
+        <div class="mono">{{pf_nome}}</div>
+      </div>
+    </div>
 
-  <div class="section">
-    <h2>Dados da Proposta</h2>
+    <h2>STATUS</h2>
+    <div class="badge">{{valor_brl}} &nbsp;|&nbsp; {{tipo_ato}} EXPEDIDO EM NOME DA PF</div>
 
-    <div class="field"><span class="label">Empresa:</span> {{nome_empresa}}</div>
-    <div class="field"><span class="label">Responsável:</span> {{nome_cliente}}</div>
-    <div class="field"><span class="label">Serviço:</span> {{tipo_servico}}</div>
-  </div>
+    <h2>PROVA (VERIFICAÇÃO OFICIAL)</h2>
+    <div class="box">
+      <div class="muted">ID/URL DO ATO</div>
+      <div class="mono">{{link_oficial}}</div>
+      <div class="hr"></div>
+      <div class="muted">Como verificar:</div>
+      <ul>
+        <li>Acesse o link acima (portal do Tribunal) ou pesquise pelo nº do processo.</li>
+        <li>Confirme a <b>expedição de e-Alvará/levantamento</b> e o <b>nome da PF</b>.</li>
+      </ul>
+    </div>
 
-  <div class="section">
-    <h2>Detalhes do Serviço</h2>
+    <h2>LEVANTAMENTO (BB/CEF)</h2>
+    <div class="box">
+      <div class="muted">Banco pagador</div>
+      <div class="mono">{{banco_pagador}}</div>
+      <div class="hr"></div>
+      <ul>
+        <li>Levar <b>RG/CPF</b>, <b>nº do processo</b> e <b>código/ID do e-Alvará</b>.</li>
+        <li>Agência com <b>tesouraria/gerência</b> agiliza o atendimento.</li>
+        <li>Prazo prático: <b>3–7 dias</b> (alguns casos até 15).</li>
+      </ul>
+    </div>
 
-    <div class="field"><span class="label">Comprimento:</span> {{comprimento}} m</div>
-    <div class="field"><span class="label">Largura:</span> {{largura}} m</div>
-    <div class="field"><span class="label">Altura média:</span> {{altura}} m</div>
+    <h2>REMUNERAÇÃO (PÓS-CRÉDITO)</h2>
+    <div class="box">
+      <ul>
+        <li>Sem adiantamento. Sem senha. Sem procuração.</li>
+        <li>Você só me paga <b>{{fee_percent}}%</b> após o crédito cair na sua conta.</li>
+        <li>Emitimos recibo no ato do pagamento do fee.</li>
+      </ul>
+    </div>
 
-    <br>
-
-    <div class="field"><span class="label">Área calculada:</span> {{area}} m²</div>
-    <div class="field"><span class="label">Volume executado:</span> {{volume}} m³</div>
-  </div>
-
-  <div class="section">
-    <h2>Análise de Medição</h2>
-
-    <div class="field"><span class="label">Volume considerado:</span> {{volume_aprovado}} m³</div>
-    <div class="field"><span class="label">Diferença apurada:</span> {{diferenca}} m³</div>
-
-    <br>
-
-    <!-- AJUSTE 1: FRASE DE CONTESTAÇÃO -->
-    <div class="field">
-      Diferença técnica apurada que pode ser utilizada como contra-prova em processo de revisão de medição.
+    <div class="hr"></div>
+    <div class="foot">
+      Operação TORRE — Dossiê PF e-Alvará (TRT/TJ). Documento informativo; não há prestação de serviços jurídicos.
     </div>
   </div>
-
-  <!-- AJUSTE 2: RODAPÉ SEM "ORÇAMENTO" -->
-  <div class="footer">
-    Este documento apresenta análise técnica baseada nas dimensões informadas.<br><br>
-    Para mais informações, entre em contato.
-  </div>
-
 </body>
 </html>
