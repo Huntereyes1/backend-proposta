@@ -362,6 +362,139 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// Debug: testa pesquisa avançada com filtro por palavra-chave
+app.get("/debug/avancada", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunais = String(req.query.tribunais || "TRT15");
+    const palavra = req.query.palavra || "alvará";
+    const dataParam = req.query.data || null;
+    
+    const d = dataParam ? new Date(dataParam) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
+    
+    log(`[avancada] Navegando para DEJT...`);
+    await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await sleep(2000);
+    
+    // Configura formulário básico
+    await page.evaluate((dataPt) => {
+      const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+      for (const r of radios) {
+        if (r.value === "J" || /judici/i.test(r.id || "")) {
+          r.checked = true; r.click();
+        }
+      }
+      const all = Array.from(document.querySelectorAll("input"));
+      const ini = all.find(i => /data.?ini/i.test((i.id || "") + (i.name || "")));
+      const fim = all.find(i => /data.?fim/i.test((i.id || "") + (i.name || "")));
+      if (ini) { ini.value = dataPt; ini.dispatchEvent(new Event("change", { bubbles: true })); }
+      if (fim) { fim.value = dataPt; fim.dispatchEvent(new Event("change", { bubbles: true })); }
+    }, dataPt);
+    
+    const numTribunal = tribunais.replace(/\D/g, "");
+    await page.evaluate((num) => {
+      const selects = document.querySelectorAll('select');
+      for (const sel of selects) {
+        for (const opt of sel.options) {
+          const numOpt = (opt.textContent || "").replace(/\D/g, "");
+          if (numOpt === num) {
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            return;
+          }
+        }
+      }
+    }, numTribunal);
+    
+    await sleep(1000);
+    
+    // Clica em "Pesquisa avançada"
+    log(`[avancada] Clicando em Pesquisa avançada...`);
+    const clicouAvancada = await page.evaluate(() => {
+      const btn = document.querySelector('[id*="botaoPesquisaAvancada"]') ||
+                  document.querySelector('button[onclick*="PesquisaAvancada"]');
+      if (btn) {
+        const onclick = btn.getAttribute('onclick') || '';
+        if (onclick) {
+          const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, '');
+          try { eval(cleaned); return 'eval onclick'; } catch(e) {}
+        }
+        btn.click();
+        return 'click';
+      }
+      return null;
+    });
+    log(`[avancada] Clicou: ${clicouAvancada}`);
+    
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+    await sleep(2000);
+    
+    // Verifica campos disponíveis na pesquisa avançada
+    const camposAvancada = await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'));
+      const selects = Array.from(document.querySelectorAll('select'));
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'));
+      
+      return {
+        inputs: inputs.map(i => ({ id: i.id, name: i.name, placeholder: i.placeholder })).slice(0, 20),
+        selects: selects.map(s => ({ id: s.id, name: s.name, options: s.options.length })).slice(0, 10),
+        buttons: buttons.map(b => ({ id: b.id, value: b.value || b.textContent, onclick: (b.getAttribute('onclick') || '').substring(0, 100) })).slice(0, 10),
+        bodyLength: document.body.innerText.length,
+        trechoBody: document.body.innerText.substring(0, 1500)
+      };
+    });
+    
+    log(`[avancada] Body: ${camposAvancada.bodyLength} chars`);
+    log(`[avancada] Inputs: ${camposAvancada.inputs.length}, Selects: ${camposAvancada.selects.length}`);
+    
+    // Se tiver campo de palavra-chave, preenche
+    const campoTexto = camposAvancada.inputs.find(i => 
+      /texto|palavra|conteudo|busca|search/i.test((i.id || '') + (i.name || '') + (i.placeholder || ''))
+    );
+    
+    if (campoTexto) {
+      log(`[avancada] Preenchendo campo de texto: ${campoTexto.id || campoTexto.name}`);
+      await page.evaluate((id, name, palavra) => {
+        const input = document.getElementById(id) || document.querySelector(`[name="${name}"]`);
+        if (input) {
+          input.value = palavra;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }, campoTexto.id, campoTexto.name, palavra);
+    }
+    
+    await browser.close();
+    
+    res.json({
+      ok: true,
+      data: dataPt,
+      tribunais,
+      palavra,
+      camposAvancada,
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // Debug: testa especificamente o download do caderno
 app.get("/debug/download", async (req, res) => {
   const logs = [];
