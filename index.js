@@ -1,5 +1,5 @@
-// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.0)
-// Endpoints: /scan, /gerar-dossie, /batch, /pack, /health, /debug/last
+// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.1, DEJT real)
+// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last
 
 import express from "express";
 import cors from "cors";
@@ -27,7 +27,7 @@ const TEMPLATE_PATH = path.join(__dirname, "template.html");
 
 const MIN_TICKET_CENTS = Number(process.env.MIN_TICKET_CENTS || 2_000_000); // 20k
 const CONCURRENCY = Number(process.env.CONCURRENCY || 3);
-const DEMO = String(process.env.DEMO || "true").toLowerCase() === "true"; // liga demos para /scan
+const DEMO = false; // <<<<< DESLIGADO SEMPRE
 
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 if (!fs.existsSync(EXPORTS_DIR)) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
@@ -50,9 +50,8 @@ app.use("/exports", express.static(EXPORTS_DIR, {
 }));
 
 app.get("/", (_req, res) =>
-  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.0 — sem Typebot/Make")
+  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.1 — DEJT real")
 );
-
 app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
 
 // ===== Utils =====
@@ -101,61 +100,153 @@ function makeWaLink(text) {
   const url = "https://wa.me/?text=" + encodeURIComponent(text);
   return url;
 }
-
 function makeEmailLink(subject, body) {
   const url = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   return url;
 }
 
-// ===== Miner (mínimo viável)
-// /scan retorna casos válidos já filtrados TORRE.
-// Modo DEMO gera 15 linhas falsas com valores 30–80k e dados coerentes.
-async function scanMiner({ limit = 60, tribunais = "TRT15" }) {
-  if (DEMO) {
-    const items = [];
-    const tlist = tribunais.split(",").map(s => s.trim()).filter(Boolean);
-    for (let i = 0; i < Math.min(limit, 60); i++) {
-      const valor = (Math.floor(Math.random() * 50) + 30) * 1000; // 30k–80k
-      const cents = valor * 100;
-      const t = tlist[i % tlist.length];
-      const num = String(1000000 + i) + "-00.2024.5.15.000" + ((i % 9) + 1);
-      items.push({
-        tribunal: `${t}`,
-        vara: `VT ${1 + (i % 10)} — Cidade ${1 + (i % 5)}`,
-        processo: num,
-        data_ato: new Date().toISOString().slice(0,10),
-        pf_nome: `BENEFICIARIO DEMO ${i+1}`,
-        valor_centavos: cents,
-        tipo_ato: i % 2 ? "e-Alvará" : "Levantamento",
-        banco_pagador: i % 3 === 0 ? "BB" : "CEF",
-        id_ato: `https://portal.exemplo/${t}/ato/${i+1000}`,
-        link_oficial: `https://portal.exemplo/${t}/proc/${num}`
-      });
-    }
-    // Regra TORRE já atendida, mas limita a 15 no front
-    return items;
-  }
+// ===== Heurísticas e RegEx para DEJT =====
+const DEJT_URL = "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y";
+const RX_PROC = /\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/g;
+const RX_MOEDA = /R\$\s*([\d\.]+,\d{2})/g;
+const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 
-  // ===== PROD FUTURO (rabisque aqui seu scraper real):
-  // 1) Use fetch() para páginas recentes do TRT/TJ alvo
-  // 2) Parseie HTML com RegExp simples (ou troque por Cheerio/Playwright)
-  // 3) Aplique filtros TORRE e retorne array no formato abaixo
-  // Por enquanto, sem DEMO = vazio (evita quebrar deploy)
-  return [];
+function _parecePF(nome) {
+  if (!nome) return false;
+  const s = nome.toUpperCase();
+  if (s.includes(" LTDA") || s.includes(" S.A") || s.includes(" S/A") || s.includes(" EPP") || s.includes(" MEI ")) return false;
+  return s.trim().split(/\s+/).length >= 2;
+}
+function brlToCents(brlStr) {
+  const s = String(brlStr).replace(/\./g, "").replace(",", ".");
+  const v = Number(s);
+  return Number.isFinite(v) ? Math.round(v * 100) : NaN;
+}
+function pickProvavelPF(texto) {
+  const linhas = (texto || "").split(/\n+/).map(l => l.trim()).filter(Boolean);
+  for (const l of linhas) {
+    if (/(benef|titular|credor|reclamante)/i.test(l)) {
+      const campo = l.replace(/.*?:/,'').replace(/\(.*?\)/g,'').trim();
+      if (_parecePF(campo)) return campo;
+    }
+  }
+  for (const l of linhas) if (_parecePF(l)) return l;
+  return "";
 }
 
-// ===== /scan
+// ===== Miner real (DEJT) — retorna itens já no formato do /scan
+async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
+  if (DEMO) return []; // segurança: nunca usar DEMO
+
+  const d = data ? new Date(data) : new Date();
+  const dd = String(d.getDate()).padStart(2,"0");
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const yyyy = d.getFullYear();
+  const dataPt = `${dd}/${mm}/${yyyy}`;
+
+  const browser = await puppeteer.launch({ args: ["--no-sandbox","--disable-setuid-sandbox"] });
+  const page = await browser.newPage();
+
+  // 1) abre DEJT "Diários > Judiciário"
+  await page.goto(DEJT_URL, { waitUntil: "domcontentloaded" });
+
+  // 2) Preenche datas e seleciona TRT-15 com duas tentativas
+  await page.evaluate((dataPt) => {
+    // datas
+    const ini = document.querySelector('input[name="dataIni"], input#dataIni');
+    const fim = document.querySelector('input[name="dataFim"], input#dataFim');
+    if (ini) { ini.value = ""; ini.dispatchEvent(new Event("input")); ini.value = dataPt; ini.dispatchEvent(new Event("change")); }
+    if (fim) { fim.value = ""; fim.dispatchEvent(new Event("input")); fim.value = dataPt; fim.dispatchEvent(new Event("change")); }
+  }, dataPt);
+
+  // tenta selecionar órgão por texto
+  const okSelect = await page.evaluate(() => {
+    const sel = document.querySelector('select[name="tribunal"], select#orgaos, select#tribunal, select[name="orgao"]');
+    if (!sel) return false;
+    const opts = Array.from(sel.options || []);
+    const alvo = opts.find(o => (o.textContent||"").includes("TRT 15"));
+    if (!alvo) return false;
+    sel.value = alvo.value;
+    sel.dispatchEvent(new Event("change"));
+    return true;
+  });
+
+  // TODO (se seu ambiente exigir): se okSelect === false, use page.select com o VALUE que você inspecionar no DOM.
+
+  // 3) Clica "Pesquisar"
+  try {
+    await Promise.all([
+      page.click('input[type="submit"][value="Pesquisar"], button:has-text("Pesquisar"), input#btnPesquisar'),
+      page.waitForNavigation({ waitUntil: "networkidle2" })
+    ]);
+  } catch {
+    // fallback: se não houver navegação, segue
+  }
+
+  // 4) Coleta links "Visualizar Texto"
+  const linksTexto = await page.$$eval('a', as => as
+    .filter(a => /Visualizar Texto/i.test(a.textContent || ""))
+    .map(a => a.href)
+  );
+
+  const items = [];
+  for (let i = 0; i < linksTexto.length && items.length < limit; i++) {
+    const href = linksTexto[i];
+    try {
+      const pg = await browser.newPage();
+      await pg.goto(href, { waitUntil: "domcontentloaded" });
+      const conteudo = await pg.$eval('body', el => el.innerText || "");
+      await pg.close();
+
+      if (!RX_ALVAR.test(conteudo)) continue;
+
+      const procs = (conteudo.match(RX_PROC) || []).slice(0,1);
+      const processo = procs[0] || "";
+
+      let valorCents = NaN;
+      let m;
+      while ((m = RX_MOEDA.exec(conteudo))) {
+        const cents = brlToCents(m[1]);
+        if (!Number.isFinite(valorCents) || cents > valorCents) valorCents = cents;
+      }
+      if (!Number.isFinite(valorCents)) continue;
+
+      const tipo_ato = RX_ALVAR.test(conteudo) ? "e-Alvará" : "Levantamento";
+      const pf_nome = pickProvavelPF(conteudo);
+      if (!pf_nome) continue;
+
+      items.push({
+        tribunal: "TRT15",
+        vara: "",
+        processo,
+        data_ato: `${yyyy}-${mm}-${dd}`,
+        pf_nome,
+        valor_centavos: valorCents,
+        tipo_ato,
+        banco_pagador: /CEF/i.test(conteudo) ? "CEF" : "BB",
+        id_ato: href,
+        link_oficial: href
+      });
+    } catch {}
+  }
+
+  await browser.close();
+  return items;
+}
+
+// ===== /scan (usa miner real + filtro TORRE) — retorno JSON
 app.get("/scan", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 60), 120);
     const tribunais = String(req.query.tribunais || process.env.SCAN_TRIBUNAIS || "TRT15");
-    const cases = await scanMiner({ limit, tribunais });
+    const data = req.query.data || null;
 
-    // Filtro TORRE (por segurança)
+    const cases = await scanMiner({ limit, tribunais, data });
+
     const filtered = cases.filter(c => {
       const cents = Number(c.valor_centavos);
-      const isPF = !!c.pf_nome && !/advogad|patron/i.test(String(c.pf_nome));
-      const atoPronto = /(alvar[aá]|levantamento|libera[cç][aã]o)/i.test(String(c.tipo_ato || ""));
+      const isPF = _parecePF(c.pf_nome);
+      const atoPronto = RX_ALVAR.test(String(c.tipo_ato || ""));
       return c.tribunal && c.processo && isPF && (cents >= MIN_TICKET_CENTS) && atoPronto;
     });
 
@@ -166,7 +257,95 @@ app.get("/scan", async (req, res) => {
   }
 });
 
-// ===== /gerar-dossie
+// ===== /relatorio — varre DEJT, filtra TORRE e gera 1 PDF consolidado (top N)
+app.get("/relatorio", async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit || 15), 50);
+    const data = req.query.data || null;
+
+    const brutos = await scanMiner({ limit: limit * 3, tribunais: "TRT15", data });
+    const filtrados = brutos.filter(c => {
+      const isPF = _parecePF(c.pf_nome);
+      const hasTicket = Number(c.valor_centavos) >= MIN_TICKET_CENTS;
+      const atoPronto = RX_ALVAR.test(String(c.tipo_ato||""));
+      return c.processo && isPF && hasTicket && atoPronto;
+    }).slice(0, limit);
+
+    if (!filtrados.length) {
+      return res.status(404).json({ ok:false, error:"Nada elegível no DEJT (TRT-15) para a data." });
+    }
+
+    const rows = filtrados.map((c,i) => `
+      <tr>
+        <td>${i+1}</td>
+        <td>${safe(c.pf_nome)}</td>
+        <td>${safe(c.processo)}</td>
+        <td>${safe(c.tribunal)}</td>
+        <td>${safe(c.tipo_ato||"e-Alvará")}</td>
+        <td>${centavosToBRL(c.valor_centavos)}</td>
+        <td><a href="${safe(c.link_oficial||c.id_ato||"#")}">ato</a></td>
+      </tr>
+    `).join("");
+
+    const dataLabel = data ? new Date(data).toLocaleDateString("pt-BR") : new Date().toLocaleDateString("pt-BR");
+    const html = `
+<!doctype html><html lang="pt-br"><meta charset="utf-8">
+<title>Dossiê Consolidado — ${filtrados.length} casos</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:24px;color:#111}
+  h1{font-size:20px;margin:0 0 12px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border:1px solid #ddd;padding:8px;vertical-align:top}
+  th{background:#f4f6f8;text-align:left}
+  .meta{opacity:.75;font-size:12px;margin-bottom:12px}
+</style>
+<h1>Dossiê Consolidado — ${filtrados.length} casos (TRT-15 / ${dataLabel})</h1>
+<div class="meta">
+  Regra TORRE: PF nominal • Ticket ≥ ${centavosToBRL(MIN_TICKET_CENTS)} • Ato pronto (alvará/levantamento)
+</div>
+<table>
+  <thead>
+    <tr><th>#</th><th>PF</th><th>Processo</th><th>Tribunal</th><th>Ato</th><th>Valor</th><th>Prova</th></tr>
+  </thead>
+  <tbody>${rows}</tbody>
+</table>
+</html>`;
+
+    const fileName = `relatorio-${Date.now()}.pdf`;
+    const filePath = path.join(PDF_DIR, fileName);
+
+    const browser = await puppeteer.launch({ args:["--no-sandbox","--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.pdf({
+      path: filePath,
+      format: "A4",
+      margin: { top: "12mm", right: "12mm", bottom: "14mm", left: "12mm" },
+      printBackground: true
+    });
+    await browser.close();
+
+    lastPdfFile = fileName;
+
+    return res.json({
+      ok: true,
+      count: filtrados.length,
+      url: `${BASE_URL}/pdf/${fileName}`,
+      preview: `${BASE_URL}/pdf/${fileName}#view=fitH`,
+      items: filtrados.map(c => ({
+        pf_nome: c.pf_nome,
+        processo: c.processo,
+        valor: centavosToBRL(c.valor_centavos),
+        link: c.link_oficial || c.id_ato
+      }))
+    });
+  } catch (e) {
+    console.error("Erro /relatorio:", e);
+    res.status(500).json({ ok:false, error:String(e?.message||e) });
+  }
+});
+
+// ===== /gerar-dossie (individual)
 app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   try {
     const {
@@ -175,13 +354,13 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       tipo_ato, banco_pagador, id_ato, link_oficial, fee_percent
     } = req.body || {};
 
-    const isPF = !!pf_nome && !/advogad|patron/i.test(String(pf_nome));
+    const isPF = _parecePF(pf_nome);
     const cents = Number.isFinite(valor_centavos)
       ? Number(valor_centavos)
       : Math.round(toNumber(valor_reais || 0) * 100);
 
     const hasTicket = Number.isFinite(cents) && cents >= MIN_TICKET_CENTS;
-    const atoPronto = /(alvar[aá]|levantamento|libera[cç][aã]o)/i.test(String(tipo_ato || ""));
+    const atoPronto = RX_ALVAR.test(String(tipo_ato || ""));
 
     if (!tribunal || !processo || !isPF || !hasTicket || !atoPronto) {
       return res.status(400).json({
@@ -227,7 +406,6 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
 
     lastPdfFile = fileName;
 
-    // Mensagens prontas (2 linhas) + links
     const pitch1 = `${pf_nome}, no ${tribunal} proc. ${processo} há ${tipo_ato || "e-Alvará"} de ${valorBRL} em seu nome.\nTe guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
     const wa = makeWaLink(pitch1);
     const email = makeEmailLink(
@@ -268,7 +446,6 @@ app.post("/batch", async (req, res) => {
     }
     const out = await Promise.all(results);
 
-    // Monta CSV simples
     const now = new Date();
     const stamp = now.toISOString().slice(0,19).replace(/[:T]/g,"-");
     const csvName = `lote-${stamp}.csv`;
@@ -294,11 +471,7 @@ app.post("/batch", async (req, res) => {
     }
     await fsp.writeFile(csvPath, lines.join("\n"), "utf8");
 
-    return res.json({
-      ok: true,
-      items: out,
-      csv: `${BASE_URL}/exports/${csvName}`
-    });
+    return res.json({ ok: true, items: out, csv: `${BASE_URL}/exports/${csvName}` });
   } catch (e) {
     console.error("Erro /batch:", e);
     res.status(500).json({ ok: false, error: "Erro no batch", cause: String(e?.message || e) });
@@ -338,7 +511,6 @@ app.get("/pdf/proposta.pdf", (_req, res) => {
   if (!lastPdfFile) return res.status(404).send("PDF ainda não gerado.");
   return res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
 });
-
 app.get("/debug/last", (_req, res) => {
   const exists = lastPdfFile ? fs.existsSync(path.join(PDF_DIR, lastPdfFile)) : false;
   res.json({ lastPdfFile, exists, open: lastPdfFile ? `${BASE_URL}/pdf/${lastPdfFile}` : null });
