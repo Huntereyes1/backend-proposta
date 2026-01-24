@@ -1,4 +1,4 @@
-// index.js — TORRE PF e-Alvará (TRT) — v5.1 (PDF do caderno suportado)
+// index.js — TORRE PF e-Alvará (TRT/DEJT) — v5.2 (PDF via response.arrayBuffer)
 // Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/*
 
 import express from "express";
@@ -29,6 +29,7 @@ const MIN_TICKET_CENTS = Number(process.env.MIN_TICKET_CENTS || 2_000_000);
 const CONCURRENCY = Number(process.env.CONCURRENCY || 3);
 const SCAN_TRIBUNAIS = String(process.env.SCAN_TRIBUNAIS || "TRT15");
 const DEMO = /^(1|true|on)$/i.test(String(process.env.DEMO || "false"));
+const TZ = process.env.TZ || "America/Sao_Paulo";
 
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 if (!fs.existsSync(EXPORTS_DIR)) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
@@ -39,21 +40,29 @@ app.use(morgan("tiny"));
 
 let lastPdfFile = null;
 
-app.use("/pdf", express.static(PDF_DIR, {
-  setHeaders: (res) => {
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Cache-Control", "no-store");
-  },
-}));
+// ===== Static
+app.use(
+  "/pdf",
+  express.static(PDF_DIR, {
+    setHeaders: (res) => {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "no-store");
+    },
+  })
+);
 app.use("/exports", express.static(EXPORTS_DIR));
 
-app.get("/", (_req, res) => res.send("Backend TORRE v5.1 — DEJT (caderno PDF)"));
-app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
+app.get("/", (_req, res) => res.send("Backend TORRE v5.2 — DEJT (PDF capture)"));
+app.get("/health", (_req, res) =>
+  res.json({ ok: true, now: new Date().toISOString(), tz: TZ })
+);
 
 // ===== Utils
 const centavosToBRL = (c) =>
   (Math.round(c) / 100).toLocaleString("pt-BR", {
-    style: "currency", currency: "BRL", minimumFractionDigits: 2,
+    style: "currency",
+    currency: "BRL",
+    minimumFractionDigits: 2,
   });
 
 const safe = (s = "") =>
@@ -68,13 +77,23 @@ function brlToCents(brlStr) {
 function _parecePF(nome) {
   if (!nome) return false;
   const s = nome.toUpperCase();
-  if (s.includes(" LTDA") || s.includes(" S.A") || s.includes(" S/A") ||
-      s.includes(" EPP") || s.includes(" MEI ") || s.includes(" EIRELI")) return false;
+  if (
+    s.includes(" LTDA") ||
+    s.includes(" S.A") ||
+    s.includes(" S/A") ||
+    s.includes(" EPP") ||
+    s.includes(" MEI ") ||
+    s.includes(" EIRELI")
+  )
+    return false;
   return s.trim().split(/\s+/).length >= 2;
 }
 
 function pickProvavelPF(texto) {
-  const linhas = (texto || "").split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const linhas = (texto || "")
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   for (const l of linhas) {
     if (/(benef|titular|credor|reclamante|autor)/i.test(l)) {
       const campo = l.replace(/.*?:/, "").replace(/\(.*?\)/g, "").trim();
@@ -85,196 +104,290 @@ function pickProvavelPF(texto) {
   return "";
 }
 
-// ===== Template & QR
-async function renderFromTemplate(vars) {
-  let html = await fsp.readFile(TEMPLATE_PATH, "utf8");
-  let qrcodeDataUrl = "";
-  const link = (vars.id_ato || vars.link_oficial || "").toString().trim();
-  if (link) {
-    try { qrcodeDataUrl = await QRCode.toDataURL(link, { margin: 0 }); } catch {}
-  }
-  const allVars = { ...vars, qrcode_dataurl: qrcodeDataUrl };
-  for (const [k, v] of Object.entries(allVars)) {
-    html = html.replaceAll(`{{${k}}}`, v == null ? "" : String(v));
-  }
-  return html;
-}
-
 function makeWaLink(text) {
   return "https://wa.me/?text=" + encodeURIComponent(text);
 }
 function makeEmailLink(subject, body) {
-  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(
+    body
+  )}`;
 }
 
-// ===== Regex e DEJT
+// ===== Consts / Regex
 const DEJT_URL = "https://dejt.jt.jus.br/dejt/f/n/diariocon";
 const RX_PROC = /\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/g;
 const RX_MOEDA = /R\$\s*([\d\.]+,\d{2})/g;
 const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
-const RX_BANCO = /(CEF|CAIXA|BANCO\s+DO\s+BRASIL|BB)/i;
 
-// Helper de espera
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ====== Navegação/listagem → abrir caderno
+// ===== Puppeteer helpers
+async function launchBrowser() {
+  return puppeteer.launch({
+    headless: "new",
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+  });
+}
+
 async function clickPesquisarReal(page) {
   const tryClickIn = async (ctx) => {
     try {
       const selId = '[id="corpo:formulario:botaoAcaoPesquisar"]';
       const btn = await ctx.$(selId);
       if (btn) {
-        await ctx.$eval(selId, el => el.scrollIntoView({ block: "center" }));
+        await ctx.$eval(selId, (el) => el.scrollIntoView({ block: "center" }));
         await ctx.click(selId, { delay: 30 });
-        return "page.click(corpo:formulario:botaoAcaoPesquisar)";
+        return 'page.click(corpo:formulario:botaoAcaoPesquisar)';
       }
       const btnPesquisar = await ctx.$('input[value="Pesquisar"]');
       if (btnPesquisar) {
-        await ctx.$eval('input[value="Pesquisar"]', el => el.scrollIntoView({ block: "center" }));
+        await ctx.$eval('input[value="Pesquisar"]', (el) =>
+          el.scrollIntoView({ block: "center" })
+        );
         await ctx.click('input[value="Pesquisar"]', { delay: 30 });
         return "page.click(input[value=Pesquisar])";
       }
       return null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   };
   let how = await tryClickIn(page);
   if (how) return how;
   for (const f of page.frames()) {
     if (f === page.mainFrame()) continue;
     how = await tryClickIn(f);
-    if (how) return how + " (iframe)";
+    if (how) return how + " (in iframe)";
   }
   return "no-button-found";
 }
 
 async function waitJsfResult(page, beforeLen) {
   await Promise.race([
-    page.waitForResponse(r => r.request().method() === "POST", { timeout: 15000 }),
-    page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {})
+    page.waitForResponse((r) => r.request().method() === "POST", {
+      timeout: 15000,
+    }),
+    page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {}),
   ]).catch(() => {});
-  await page.waitForSelector("table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar']", { timeout: 12000 }).catch(() => {});
-  await page.waitForFunction(
-    prev => (document.body.innerText || "").length > prev + 500,
-    { timeout: 20000 }, beforeLen
-  ).catch(() => {});
+  await page
+    .waitForSelector(
+      "table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar']",
+      { timeout: 12000 }
+    )
+    .catch(() => {});
+  await page
+    .waitForFunction(
+      (prev) => (document.body.innerText || "").length > prev + 500,
+      { timeout: 20000 },
+      beforeLen
+    )
+    .catch(() => {});
   await sleep(800);
 }
 
-async function openFirstCaderno(page) {
-  return await page.evaluate(() => {
+// Puppeteer v23+: Response.buffer() foi removido. Usar arrayBuffer().
+async function responseToBuffer(resp) {
+  try {
+    const ab = await resp.arrayBuffer();
+    return Buffer.from(ab);
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+/**
+ * Abre o primeiro caderno do tribunal e CAPTURA o PDF da resposta (quando o "Baixar" faz submitForm()).
+ * Retorna { how, pdfUrl, pdfPath, pdfBuffer }.
+ */
+async function openFirstCadernoAndGetPdf(page) {
+  // Armadilha para respostas PDF (com fallback de espera explícita)
+  const pdfResponses = [];
+  const responseHandler = async (response) => {
+    try {
+      const url = response.url();
+      const ct = (response.headers()["content-type"] || "").toLowerCase();
+      if (ct.includes("application/pdf")) {
+        const buf = await responseToBuffer(response);
+        if (buf && buf.length > 1000) {
+          pdfResponses.push({ url, buf });
+        }
+      }
+    } catch {}
+  };
+  page.on("response", responseHandler);
+
+  // Executa o "Baixar" via onclick JSF
+  const result = await page.evaluate(() => {
     function execOnclick(onclick) {
-      if (!onclick) return false;
+      if (!onclick) return { ok: false, reason: "no-onclick" };
       const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, "");
-      try { eval(cleaned); return true; } catch { return false; }
+      try {
+        eval(cleaned);
+        return { ok: true, method: "eval onclick" };
+      } catch (e) {
+        return { ok: false, reason: "eval-error: " + e.message.substring(0, 80) };
+      }
     }
-    const link = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
-    if (!link) return { ok: false, how: "no-link" };
+    const link =
+      document.querySelector("a.link-download") ||
+      document.querySelector('a[onclick*="plcLogicaItens"]') ||
+      null;
+    if (!link) {
+      return { ok: false, reason: "link-download-not-found" };
+    }
     const oc = link.getAttribute("onclick") || "";
-    if (oc && execOnclick(oc)) return { ok: true, how: "eval onclick" };
-    link.click();
-    return { ok: true, how: "click()" };
-  });
-}
-
-// ====== NOVO: baixa o PDF do caderno (DEJT retorna no mesmo endpoint)
-async function tryDownloadCadernoPdf(page, { save = true, label = "" } = {}) {
-  // aguardará a primeira resposta que pareça PDF do diário
-  const pdfRespPromise = page.waitForResponse((resp) => {
-    const url = resp.url();
-    if (!/dejt\.jt\.jus\.br\/dejt\/f\/n\/diariocon/i.test(url)) return false;
-    const ct = (resp.headers()["content-type"] || "").toLowerCase();
-    return ct.includes("application/pdf");
-  }, { timeout: 15000 }).catch(() => null);
-
-  // tenta clicar no link (se ainda não clicado)
-  await page.evaluate(() => {
-    const link = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
-    if (link) {
-      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
-      link.dispatchEvent(ev);
-      if (typeof link.click === "function") link.click();
-    } else if (typeof window.submitForm === "function") {
-      try { window.submitForm("corpo:formulario", 1, { source: "corpo:formulario:plcLogicaItens:0:j_id132" }); } catch {}
-    }
+    const r = execOnclick(oc);
+    return { ...r, onclick: oc.substring(0, 160) };
   });
 
-  const resp = await pdfRespPromise;
-  if (!resp) return { ok: false, reason: "no-pdf-response" };
+  // Aguarda uma resposta application/pdf explicitamente (além do response listener)
+  const waitPdf = page
+    .waitForResponse(
+      (r) => {
+        const ct = (r.headers()["content-type"] || "").toLowerCase();
+        return ct.includes("application/pdf");
+      },
+      { timeout: 15000 }
+    )
+    .catch(() => null);
 
-  const buf = await resp.buffer().catch(() => null);
-  if (!buf || !buf.length) return { ok: false, reason: "empty-buffer" };
-
-  let saved = null;
-  if (save) {
-    const fname = `dejt-caderno-${Date.now()}${label ? "-" + label : ""}.pdf`;
-    const fpath = path.join(PDF_DIR, fname);
-    await fsp.writeFile(fpath, buf);
-    saved = fname;
-    lastPdfFile = fname;
-  }
-  return { ok: true, buffer: buf, file: saved };
-}
-
-// ====== NOVO: parser simples do texto do diário
-function extractItemsFromDiarioText(text, { orgao, dataISO }) {
-  // Estratégia: encontra ocorrências com "alvar" + processo + valor no raio de 800 chars
-  const items = [];
-  const idxs = [];
-  const lower = text.toLowerCase();
-  let start = 0;
-  while (true) {
-    const i = lower.indexOf("alvar", start);
-    if (i === -1) break;
-    idxs.push(i);
-    start = i + 4;
-  }
-  for (const i of idxs) {
-    const bloco = text.substring(Math.max(0, i - 600), Math.min(text.length, i + 800));
-    const proc = (bloco.match(RX_PROC) || [])[0] || "";
-    if (!proc) continue;
-
-    let valorCents = NaN, m;
-    while ((m = RX_MOEDA.exec(bloco))) {
-      const cents = brlToCents(m[1]);
-      if (!Number.isFinite(valorCents) || cents > valorCents) valorCents = cents;
+  // Mais um ciclo de rede
+  await page.waitForNetworkIdle({ idleTime: 1000, timeout: 12000 }).catch(() => {});
+  const waited = await waitPdf;
+  if (waited) {
+    const buf = await responseToBuffer(waited);
+    if (buf && buf.length > 1000) {
+      pdfResponses.push({ url: waited.url(), buf });
     }
-    if (!Number.isFinite(valorCents)) continue;
-
-    const pf = pickProvavelPF(bloco);
-    if (!pf) continue;
-
-    const banco = (RX_BANCO.exec(bloco)?.[1] || "").toUpperCase().includes("CAIXA") ? "CEF" :
-                  (RX_BANCO.exec(bloco)?.[1] || "").toUpperCase().includes("BB") ? "BB" : "BB/CEF";
-
-    items.push({
-      tribunal: orgao,
-      vara: "",
-      processo: proc,
-      data_ato: dataISO,
-      pf_nome: pf,
-      valor_centavos: valorCents,
-      tipo_ato: "e-Alvará",
-      banco_pagador: banco,
-      id_ato: `DEJT:${orgao}:${dataISO}:${proc}`,
-      link_oficial: "", // no PDF não tem link direto do ato
-    });
   }
-  return items;
+
+  page.off("response", responseHandler);
+
+  if (!result.ok && pdfResponses.length === 0) {
+    return { how: "caderno-não-encontrado: " + (result.reason || "unknown") };
+  }
+
+  if (pdfResponses.length === 0) {
+    return { how: (result.method || "clicked") + " — sem PDF na resposta" };
+  }
+
+  // Salva primeiro PDF
+  const { url: pdfUrl, buf } = pdfResponses[0];
+  const pdfName = `diario-${Date.now()}.pdf`;
+  const pdfPath = path.join(PDF_DIR, pdfName);
+  await fsp.writeFile(pdfPath, buf);
+
+  return { how: result.method || "eval onclick", pdfUrl, pdfPath, pdfBuffer: buf };
 }
 
-// ===== Debug endpoints
+async function parsePdfBufferToText(buf) {
+  try {
+    const { text } = await pdfParse(buf);
+    return text || "";
+  } catch {
+    return "";
+  }
+}
+
+async function gotoDejtAndConfigure(page, { dataPt, tribunalNumero }) {
+  await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
+  await page.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+  );
+  await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
+  await sleep(1200);
+
+  // Marca Judiciário e Disponibilização + datas
+  await page.evaluate((dataPt) => {
+    const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+    for (const r of radios) {
+      if (r.value === "J" || /judici/i.test(r.id || "") || /judici/i.test(r.name || "")) {
+        r.checked = true;
+        r.click();
+        r.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+    const dispo = radios.find(
+      (r) =>
+        /disponibiliza/i.test(r.id || "") ||
+        /disponibiliza/i.test(r.name || "") ||
+        /Disponibiliza/i.test(
+          (document.querySelector(`label[for="${r.id}"]`)?.textContent || "")
+        )
+    );
+    if (dispo) {
+      dispo.checked = true;
+      dispo.dispatchEvent(new Event("click", { bubbles: true }));
+      dispo.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    function setDate(inp, val) {
+      if (!inp) return;
+      inp.focus();
+      inp.dispatchEvent(new Event("focus", { bubbles: true }));
+      inp.value = "";
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.value = val;
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+      inp.blur();
+      inp.dispatchEvent(new Event("blur", { bubbles: true }));
+    }
+    const all = Array.from(document.querySelectorAll("input"));
+    const ini = all.find((i) => /data.?ini|dt.?ini/i.test((i.id || "") + (i.name || "")));
+    const fim = all.find((i) => /data.?fim|dt.?fim/i.test((i.id || "") + (i.name || "")));
+    setDate(ini, dataPt);
+    setDate(fim, dataPt);
+  }, dataPt);
+  await sleep(400);
+
+  // Seleciona tribunal por número no texto
+  await page.evaluate((num) => {
+    const selects = document.querySelectorAll("select");
+    for (const sel of selects) {
+      if (sel.options && sel.options.length > 5) {
+        for (const opt of sel.options) {
+          const texto = (opt.textContent || "").trim();
+          const onlyNum = texto.replace(/\D/g, "");
+          if (onlyNum === num) {
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }, tribunalNumero);
+  await sleep(700);
+
+  const beforeLen = await page.evaluate(() => document.body.innerText.length);
+  await clickPesquisarReal(page);
+  await waitJsfResult(page, beforeLen);
+}
+
+// ===== DEBUG
 app.get("/debug/env", (_req, res) => {
   res.json({
-    BASE_URL, DEMO, MIN_TICKET_CENTS, SCAN_TRIBUNAIS, CONCURRENCY,
-    PDF_DIR, EXPORTS_DIR, TZ: process.env.TZ || null,
+    BASE_URL,
+    DEMO,
+    MIN_TICKET_CENTS,
+    SCAN_TRIBUNAIS,
+    CONCURRENCY,
+    PDF_DIR,
+    EXPORTS_DIR,
+    TZ,
     PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH ? "(set)" : "(unset)",
   });
 });
 
-// Debug: testa especificamente o download do caderno (e salva PDF)
+// Testa o clique de Baixar e captura PDF
 app.get("/debug/download", async (req, res) => {
   const logs = [];
-  const log = (msg) => { console.log(msg); logs.push(msg); };
+  const log = (m) => {
+    logs.push(m);
+    console.log(m);
+  };
   try {
     const tribunais = String(req.query.tribunais || "TRT15");
     const dataParam = req.query.data || null;
@@ -284,304 +397,205 @@ app.get("/debug/download", async (req, res) => {
     const mm = String(d.getMonth() + 1).padStart(2, "0");
     const yyyy = d.getFullYear();
     const dataPt = `${dd}/${mm}/${yyyy}`;
-    const dataISO = `${yyyy}-${mm}-${dd}`;
+    const num = tribunais.replace(/\D/g, "") || "15";
 
-    const browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    });
+    const browser = await launchBrowser();
     const page = await browser.newPage();
-    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
-    await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    await sleep(1500);
 
-    // configura formulário
-    await page.evaluate((dataPt) => {
-      const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
-      for (const r of radios) {
-        if (r.value === "J" || /judici/i.test(r.id || "")) { r.checked = true; r.click(); }
-      }
-      const all = Array.from(document.querySelectorAll("input"));
-      const ini = all.find(i => /data.?ini/i.test((i.id || "") + (i.name || "")));
-      const fim = all.find(i => /data.?fim/i.test((i.id || "") + (i.name || "")));
-      if (ini) { ini.value = dataPt; ini.dispatchEvent(new Event("change", { bubbles: true })); }
-      if (fim) { fim.value = dataPt; fim.dispatchEvent(new Event("change", { bubbles: true })); }
-    }, dataPt);
+    await gotoDejtAndConfigure(page, { dataPt, tribunalNumero: num });
 
-    const numTribunal = tribunais.replace(/\D/g, "");
-    await page.evaluate((num) => {
-      const selects = document.querySelectorAll("select");
-      for (const sel of selects) {
-        for (const opt of sel.options) {
-          const numOpt = (opt.textContent || "").replace(/\D/g, "");
-          if (numOpt === num) { sel.value = opt.value; sel.dispatchEvent(new Event("change", { bubbles: true })); return; }
-        }
-      }
-    }, numTribunal);
-
-    await sleep(800);
-    await clickPesquisarReal(page);
-    await waitJsfResult(page, 900);
-
-    // pega metadados do link
+    // Espelha o que você viu: inspeciona o link e executa
     const linkInfo = await page.evaluate(() => {
-      const link = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"]');
+      const link =
+        document.querySelector("a.link-download") ||
+        document.querySelector('a[onclick*="plcLogicaItens"]') ||
+        null;
       if (!link) return null;
       return {
         href: link.getAttribute("href"),
         onclick: link.getAttribute("onclick"),
         classe: link.className,
-        html: link.outerHTML.substring(0, 300)
+        html: link.outerHTML.substring(0, 300),
       };
     });
-    log(`[download] link: ${JSON.stringify(linkInfo)}`);
+    log("[download] link: " + JSON.stringify(linkInfo));
 
-    // tenta baixar o PDF
-    const pdf = await tryDownloadCadernoPdf(page, { save: true, label: numTribunal });
+    const opened = await openFirstCadernoAndGetPdf(page);
     await browser.close();
 
-    res.json({
+    const okPdf = !!opened.pdfPath;
+    return res.json({
       ok: true,
       data: dataPt,
       linkInfo,
-      pdf_saved: !!pdf.file,
-      pdf_file: pdf.file ? `${BASE_URL}/pdf/${pdf.file}` : null,
-      reason: pdf.ok ? null : pdf.reason,
-      logs
+      pdf_saved: okPdf,
+      pdf_file: okPdf ? `${BASE_URL}/pdf/${path.basename(opened.pdfPath)}` : null,
+      reason: okPdf ? null : opened.how || "no-pdf",
+      logs,
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
+    return res.status(500).json({ ok: false, error: String(e?.message || e), logs });
   }
 });
 
-// ===== MINERADOR PRINCIPAL (agora tenta PDF do caderno)
-async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
-  if (DEMO) return { items: [], registrosBrutos: [], totalBruto: 0, discards: {} };
-
+// Mostra estrutura pós-pesquisa e tenta capturar PDF também
+app.get("/debug/pesquisa", async (req, res) => {
   const logs = [];
-  const log = (msg) => { console.log(msg); logs.push(msg); };
+  const log = (m) => {
+    logs.push(m);
+    console.log(m);
+  };
+  try {
+    const tribunais = String(req.query.tribunais || "TRT15");
+    const dataParam = req.query.data || null;
 
+    const d = dataParam ? new Date(dataParam) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+    const num = tribunais.replace(/\D/g, "") || "15";
+
+    const browser = await launchBrowser();
+    const page = await browser.newPage();
+
+    await gotoDejtAndConfigure(page, { dataPt, tribunalNumero: num });
+
+    const bodyLenBefore = await page.evaluate(() => document.body.innerText.length);
+
+    const opened = await openFirstCadernoAndGetPdf(page);
+
+    let textSample = "";
+    if (opened.pdfBuffer) {
+      const text = await parsePdfBufferToText(opened.pdfBuffer);
+      textSample = text.substring(0, 2000);
+    }
+
+    await browser.close();
+
+    return res.json({
+      ok: true,
+      data: dataPt,
+      tribunais,
+      resultado: {
+        tamanhoBody: bodyLenBefore,
+        textoPdfSample: textSample,
+        pdf: opened.pdfPath ? `${BASE_URL}/pdf/${path.basename(opened.pdfPath)}` : null,
+        pdfUrl: opened.pdfUrl || null,
+        how: opened.how || "",
+      },
+      logs,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
+// ===== MINERADOR baseado em PDF do caderno
+async function fetchDiarioPdfText({ data, tribunal }) {
   const d = data ? new Date(data) : new Date();
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yyyy = d.getFullYear();
   const dataPt = `${dd}/${mm}/${yyyy}`;
-  const dataISO = `${yyyy}-${mm}-${dd}`;
+  const num = String(tribunal || "TRT15").replace(/\D/g, "") || "15";
 
-  log(`[miner] Iniciando scan para ${tribunais} em ${dataPt}`);
-
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-  });
-
+  const browser = await launchBrowser();
   const page = await browser.newPage();
-  await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
-  await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-  page.setDefaultNavigationTimeout(60000);
-  page.setDefaultTimeout(30000);
-
-  await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-  await sleep(1500);
-
-  // Marca opções e datas
-  await page.evaluate((dataPt) => {
-    const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
-    for (const r of radios) {
-      if (r.value === "J" || /judici/i.test(r.id || "") || /judici/i.test(r.name || "")) {
-        r.checked = true; r.click(); r.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-    }
-    const all = Array.from(document.querySelectorAll("input"));
-    const ini = all.find(i => /data.?ini|dt.?ini/i.test((i.id || "") + (i.name || "")));
-    const fim = all.find(i => /data.?fim|dt.?fim/i.test((i.id || "") + (i.name || "")));
-    if (ini) { ini.value = dataPt; ini.dispatchEvent(new Event("change", { bubbles: true })); }
-    if (fim) { fim.value = dataPt; fim.dispatchEvent(new Event("change", { bubbles: true })); }
-  }, dataPt);
-
-  // normalizador
-  const norm = (s) => String(s || "").toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
-
-  // mapeia órgãos disponíveis
-  const orgaosDisponiveis = await page.evaluate(() => {
-    const candidatos = [
-      'select[name*="tribunal"]', 'select[id*="tribunal"]',
-      'select[name*="orgao"]', 'select[id*="orgao"]',
-      'select[name*="Tribunal"]', 'select[id*="Tribunal"]'
-    ];
-    let sel = null;
-    for (const s of candidatos) {
-      const x = document.querySelector(s);
-      if (x && x.options && x.options.length > 1) { sel = x; break; }
-    }
-    if (!sel) {
-      const all = document.querySelectorAll("select");
-      for (const s of all) { if (s.options && s.options.length > 5) { sel = s; break; } }
-    }
-    if (!sel) return [];
-    return Array.from(sel.options || []).map(o => ({ value: o.value, label: (o.textContent || "").trim() }));
-  });
-
-  const mapDisp = orgaosDisponiveis.map(o => ({ value: o.value, code: norm(o.label), label: o.label }));
-  const tribunaisRaw = String(tribunais || SCAN_TRIBUNAIS || "TRT15").trim();
-  let lista;
-  if (/^(ALL|\*|TRT\*)$/i.test(tribunaisRaw)) {
-    lista = mapDisp.filter(o => /^TRT\d+$/i.test(o.code)).map(o => o.code);
-  } else {
-    const pedidos = tribunaisRaw.split(/\s*,\s*/).filter(Boolean).map(norm);
-    const setDisp = new Set(mapDisp.map(o => o.code));
-    lista = pedidos.filter(p => setDisp.has(p));
-  }
-  if (!lista.length && mapDisp.length > 0) {
-    const primeiro = mapDisp.find(o => /^TRT\d+$/i.test(o.code));
-    if (primeiro) lista = [primeiro.code];
-  }
-  if (!lista.length) lista = ["TRT15"];
-  log(`[miner] Varredura: ${lista.join(", ")}`);
-
-  const registrosBrutos = [];
-  const outItems = [];
-  const discards = { sem_ato: 0, sem_processo: 0, sem_valor: 0, sem_pf: 0, erro_pagina: 0 };
-
-  for (const orgao of lista) {
-    if (outItems.length >= limit) break;
-
-    // seleciona órgão
-    const selecionou = await page.evaluate((orgao) => {
-      const candidatos = [
-        'select[name*="tribunal"]', 'select[id*="tribunal"]',
-        'select[name*="orgao"]', 'select[id*="orgao"]'
-      ];
-      let sel = null;
-      for (const s of candidatos) {
-        const x = document.querySelector(s);
-        if (x && x.options && x.options.length > 1) { sel = x; break; }
-      }
-      if (!sel) {
-        const all = document.querySelectorAll("select");
-        for (const s of all) if (s.options && s.options.length > 5) { sel = s; break; }
-      }
-      if (!sel) return { ok: false, reason: "select não encontrado" };
-      const numPedido = String(orgao).replace(/\D/g, "");
-      const alvo = Array.from(sel.options || []).find(o => (o.textContent || "").replace(/\D/g, "") === numPedido);
-      if (!alvo) return { ok: false, reason: "opção não encontrada" };
-      sel.value = alvo.value; sel.dispatchEvent(new Event("change", { bubbles: true }));
-      return { ok: true, selecionado: alvo.textContent };
-    }, orgao);
-    if (!selecionou.ok) { log(`[miner] Falha selecionar ${orgao}: ${selecionou.reason}`); continue; }
-
-    await sleep(600);
-    const beforeLen = await page.evaluate(() => document.body.innerText.length);
-    await clickPesquisarReal(page);
-    await waitJsfResult(page, beforeLen);
-
-    // verificamos se há listagem de cadernos
-    const temCaderno = await page.evaluate(() => {
-      const body = document.body.innerText || "";
-      return /Edi[çc][ãa]o\s+\d+/i.test(body) || /Caderno.*Judici/i.test(body);
-    });
-
-    if (temCaderno) {
-      // abre (executa onclick/click) e tenta baixar PDF resultante
-      await openFirstCaderno(page);
-      await sleep(800);
-      const pdfRes = await tryDownloadCadernoPdf(page, { save: false });
-      if (pdfRes.ok) {
-        const text = (await pdfParse(pdfRes.buffer)).text || "";
-        registrosBrutos.push({ href: "PDF-CADERNO", tam: text.length });
-        const itens = extractItemsFromDiarioText(text, { orgao, dataISO });
-        for (const it of itens) {
-          if (outItems.length >= limit) break;
-          if (!RX_ALVAR.test("e-Alvará")) continue;
-          if (!_parecePF(it.pf_nome)) { discards.sem_pf++; continue; }
-          if (!Number.isFinite(it.valor_centavos)) { discards.sem_valor++; continue; }
-          outItems.push(it);
-        }
-        // segue próximo órgão
-        continue;
-      } else {
-        log(`[miner] Não conseguiu baixar PDF: ${pdfRes.reason} — fallback links`);
-      }
-    }
-
-    // ====== Fallback: varrendo links (código antigo)
-    const linksAtos = await page.evaluate(() => {
-      const links = new Set();
-      const body = document.body.innerText || "";
-      if (/alvar[aá]/i.test(body)) {
-        document.querySelectorAll("a").forEach((a) => {
-          const t = (a.textContent || "").toLowerCase().trim();
-          const href = a.href || a.getAttribute("href") || "";
-          if (
-            t.includes("visualizar") || t.includes("inteiro teor") ||
-            t.includes("conteúdo") || t.includes("conteudo") ||
-            t.includes("exibir") || t.includes("abrir") || t.includes("ver") ||
-            (href || "").includes("visualizar") || (href || "").includes("teor")
-          ) {
-            if (href && !href.startsWith("javascript:void")) {
-              links.add(href.startsWith("http") ? href : (href.startsWith("/") ? "https://dejt.jt.jus.br" + href : href));
-            }
-          }
-          if (href.includes("dejt.jt.jus.br") && !href.includes("diariocon")) links.add(href);
-        });
-        document.querySelectorAll("[onclick]").forEach((el) => {
-          const oc = el.getAttribute("onclick") || "";
-          const m = oc.match(/window\.open\(['"]([^'"]+)['"]/);
-          if (m) links.add(m[1].startsWith("http") ? m[1] : "https://dejt.jt.jus.br" + m[1]);
-        });
-        document.querySelectorAll("td a[href]").forEach((a) => {
-          const href = a.href || a.getAttribute("href") || "";
-          if (href && !href.startsWith("javascript:void") && !href.includes("diariocon")) {
-            links.add(href.startsWith("http") ? href : "https://dejt.jt.jus.br" + href);
-          }
-        });
-      }
-      return Array.from(links).slice(0, 100);
-    });
-
-    for (const href of linksAtos) {
-      if (outItems.length >= limit) break;
-      try {
-        const pg = await browser.newPage();
-        pg.setDefaultTimeout(15000);
-        await pg.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 });
-        const conteudo = await pg.$eval("body", (el) => el.innerText || "").catch(() => "");
-        await pg.close();
-
-        registrosBrutos.push({ href, tam: conteudo.length });
-
-        if (!conteudo || conteudo.length < 100) { discards.erro_pagina++; continue; }
-        if (!RX_ALVAR.test(conteudo)) { discards.sem_ato++; continue; }
-
-        const proc = (conteudo.match(RX_PROC) || [])[0] || "";
-        if (!proc) { discards.sem_processo++; continue; }
-
-        let valorCents = NaN, m;
-        while ((m = RX_MOEDA.exec(conteudo))) {
-          const cents = brlToCents(m[1]);
-          if (!Number.isFinite(valorCents) || cents > valorCents) valorCents = cents;
-        }
-        if (!Number.isFinite(valorCents)) { discards.sem_valor++; continue; }
-
-        const pf_nome = pickProvavelPF(conteudo);
-        if (!pf_nome) { discards.sem_pf++; continue; }
-
-        outItems.push({
-          tribunal: orgao, vara: "", processo: proc, data_ato: dataISO,
-          pf_nome, valor_centavos: valorCents, tipo_ato: "e-Alvará",
-          banco_pagador: /CEF|CAIXA/i.test(conteudo) ? "CEF" : "BB",
-          id_ato: href, link_oficial: href,
-        });
-      } catch { discards.erro_pagina++; }
-    }
-  }
-
+  await gotoDejtAndConfigure(page, { dataPt, tribunalNumero: num });
+  const opened = await openFirstCadernoAndGetPdf(page);
   await browser.close();
-  log(`[miner] Finalizado: ${outItems.length} itens`);
 
-  return { items: outItems, registrosBrutos, totalBruto: registrosBrutos.length, discards, logs };
+  if (!opened.pdfBuffer) return { pdfText: "", pdfPath: null, how: opened.how || "" };
+  const text = await parsePdfBufferToText(opened.pdfBuffer);
+  return {
+    pdfText: text || "",
+    pdfPath: opened.pdfPath || null,
+    how: opened.how || "",
+  };
+}
+
+function extractCandidatesFromDiarioText(text, dateISO, tribunalCode = "TRT15") {
+  if (!text) return [];
+  const blocks = text.split(/(?=\n.*?(ALVAR[ÁA]|LEVANTAMENTO|LIBERA[ÇC][AÃ]O).*?\n)/i);
+  const out = [];
+  for (const raw of blocks) {
+    if (!RX_ALVAR.test(raw)) continue;
+    const proc = (raw.match(RX_PROC) || [])[0] || "";
+    if (!proc) continue;
+
+    let valorCents = NaN;
+    let m;
+    while ((m = RX_MOEDA.exec(raw))) {
+      const cents = brlToCents(m[1]);
+      if (!Number.isFinite(valorCents) || cents > valorCents) valorCents = cents;
+    }
+    if (!Number.isFinite(valorCents)) continue;
+
+    const pf = pickProvavelPF(raw);
+    if (!pf) continue;
+
+    out.push({
+      tribunal: tribunalCode,
+      vara: "",
+      processo: proc,
+      data_ato: dateISO,
+      pf_nome: pf,
+      valor_centavos: valorCents,
+      tipo_ato: "e-Alvará",
+      banco_pagador: /CEF|CAIXA/i.test(raw) ? "CEF" : "BB",
+      id_ato: "",
+      link_oficial: "",
+      _amostra: raw.substring(0, 800),
+    });
+  }
+  return out;
+}
+
+async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
+  if (DEMO) return { items: [], totalBruto: 0, discards: {}, logs: ["DEMO on"] };
+
+  const d = data ? new Date(data) : new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const iso = `${yyyy}-${mm}-${dd}`;
+
+  const pedidos = String(tribunais || SCAN_TRIBUNAIS || "TRT15")
+    .split(/\s*,\s*/)
+    .filter(Boolean);
+
+  const logs = [];
+  const out = [];
+  const discards = { sem_pdf: 0, sem_matches: 0 };
+
+  for (const orgao of pedidos) {
+    const { pdfText, how } = await fetchDiarioPdfText({
+      data: iso,
+      tribunal: orgao,
+    });
+
+    logs.push(`[miner] ${orgao}: ${how || "—"}; texto=${pdfText.length}`);
+
+    if (!pdfText) {
+      discards.sem_pdf++;
+      continue;
+    }
+
+    const candidates = extractCandidatesFromDiarioText(pdfText, iso, orgao);
+    if (!candidates.length) {
+      discards.sem_matches++;
+      continue;
+    }
+
+    for (const c of candidates) {
+      out.push(c);
+      if (out.length >= limit) break;
+    }
+    if (out.length >= limit) break;
+  }
+
+  return { items: out.slice(0, limit), totalBruto: out.length, discards, logs };
 }
 
 // ===== /scan
@@ -592,29 +606,26 @@ app.get("/scan", async (req, res) => {
     const data = req.query.data || null;
     const wantDebug = String(req.query.debug || "0") === "1";
 
-    const { items: brutos, registrosBrutos, totalBruto, discards, logs } = await scanMiner({
-      limit, tribunais, data,
-    });
-
-    const filtrados = brutos.filter((c) => {
-      const cents = Number(c.valor_centavos);
-      const isPF = _parecePF(c.pf_nome);
-      const atoPronto = RX_ALVAR.test(String(c.tipo_ato || ""));
-      return c.tribunal && c.processo && isPF && Number.isFinite(cents) && cents >= MIN_TICKET_CENTS && atoPronto;
+    const { items, totalBruto, discards, logs } = await scanMiner({
+      limit,
+      tribunais,
+      data,
     });
 
     if (wantDebug) {
       return res.json({
-        ok: true, data, tribunais, total_bruto: totalBruto,
-        total_filtrado: filtrados.length,
-        amostras_brutas: registrosBrutos.slice(0, 10),
-        contadores_descartes: discards,
-        itens_filtrados_preview: filtrados.slice(0, 5),
-        logs: logs?.slice(-30)
+        ok: true,
+        data,
+        tribunais,
+        total: items.length,
+        total_bruto: totalBruto,
+        discards,
+        preview: items.slice(0, 3),
+        logs: logs.slice(-40),
       });
     }
 
-    res.json({ ok: true, items: filtrados.slice(0, limit) });
+    res.json({ ok: true, items: items.slice(0, limit) });
   } catch (e) {
     console.error("Erro /scan:", e);
     res.status(500).json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
@@ -629,11 +640,13 @@ app.get("/relatorio", async (req, res) => {
     const tribunais = String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15");
     const wantDebug = String(req.query.debug || "0") === "1";
 
-    const { items: brutos, registrosBrutos, totalBruto, discards, logs } = await scanMiner({
-      limit: limit * 3, tribunais, data,
+    const { items, totalBruto, discards, logs } = await scanMiner({
+      limit: limit * 3,
+      tribunais,
+      data,
     });
 
-    const filtrados = brutos
+    const filtrados = items
       .filter((c) => {
         const isPF = _parecePF(c.pf_nome);
         const hasTicket = Number(c.valor_centavos) >= MIN_TICKET_CENTS;
@@ -644,12 +657,14 @@ app.get("/relatorio", async (req, res) => {
 
     if (wantDebug) {
       return res.json({
-        ok: true, data, tribunais, total_bruto: totalBruto,
+        ok: true,
+        data,
+        tribunais,
+        total_bruto: totalBruto,
         total_filtrado: filtrados.length,
         contadores_descartes: discards,
-        amostras_brutas: registrosBrutos.slice(0, 10),
-        itens_filtrados_preview: filtrados.slice(0, 5),
-        logs: logs?.slice(-30)
+        preview: filtrados.slice(0, 5),
+        logs: logs?.slice(-30),
       });
     }
 
@@ -662,7 +677,9 @@ app.get("/relatorio", async (req, res) => {
       });
     }
 
-    const rows = filtrados.map((c, i) => `
+    const rows = filtrados
+      .map(
+        (c, i) => `
       <tr>
         <td>${i + 1}</td>
         <td>${safe(c.pf_nome)}</td>
@@ -670,9 +687,10 @@ app.get("/relatorio", async (req, res) => {
         <td>${safe(c.tribunal)}</td>
         <td>${safe(c.tipo_ato || "e-Alvará")}</td>
         <td>${centavosToBRL(c.valor_centavos)}</td>
-        <td><a href="${safe(c.link_oficial || c.id_ato || "#")}">ato</a></td>
+        <td>${safe(c._amostra || "").substring(0, 120)}...</td>
       </tr>`
-    ).join("");
+      )
+      .join("");
 
     const dataLabel = data
       ? new Date(data).toLocaleDateString("pt-BR")
@@ -688,10 +706,14 @@ app.get("/relatorio", async (req, res) => {
   th{background:#f4f6f8;text-align:left}
   .meta{opacity:.75;font-size:12px;margin-bottom:12px}
 </style>
-<h1>Dossiê Consolidado — ${filtrados.length} casos (${safe(tribunais)} / ${dataLabel})</h1>
-<div class="meta">Regra TORRE: PF nominal • Ticket ≥ ${centavosToBRL(MIN_TICKET_CENTS)} • Ato pronto</div>
+<h1>Dossiê Consolidado — ${filtrados.length} casos (${safe(
+      tribunais
+    )} / ${dataLabel})</h1>
+<div class="meta">Regra TORRE: PF nominal • Ticket ≥ ${centavosToBRL(
+      MIN_TICKET_CENTS
+    )} • Ato pronto</div>
 <table>
-  <thead><tr><th>#</th><th>PF</th><th>Processo</th><th>Tribunal</th><th>Ato</th><th>Valor</th><th>Prova</th></tr></thead>
+  <thead><tr><th>#</th><th>PF</th><th>Processo</th><th>Tribunal</th><th>Ato</th><th>Valor</th><th>Trecho (debug)</th></tr></thead>
   <tbody>${rows}</tbody>
 </table>
 </html>`;
@@ -699,11 +721,7 @@ app.get("/relatorio", async (req, res) => {
     const fileName = `relatorio-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    });
+    const browser = await launchBrowser();
     const pg = await browser.newPage();
     await pg.setContent(html, { waitUntil: "networkidle0" });
     await pg.pdf({
@@ -724,7 +742,7 @@ app.get("/relatorio", async (req, res) => {
         pf_nome: c.pf_nome,
         processo: c.processo,
         valor: centavosToBRL(c.valor_centavos),
-        link: c.link_oficial || c.id_ato,
+        tribunal: c.tribunal,
       })),
     });
   } catch (e) {
@@ -734,18 +752,45 @@ app.get("/relatorio", async (req, res) => {
 });
 
 // ===== /gerar-dossie
+async function renderFromTemplate(vars) {
+  let html = await fsp.readFile(TEMPLATE_PATH, "utf8");
+  let qrcodeDataUrl = "";
+  const link = (vars.id_ato || vars.link_oficial || "").toString().trim();
+  if (link) {
+    try {
+      qrcodeDataUrl = await QRCode.toDataURL(link, { margin: 0 });
+    } catch {}
+  }
+  const allVars = { ...vars, qrcode_dataurl: qrcodeDataUrl };
+  for (const [k, v] of Object.entries(allVars)) {
+    html = html.replaceAll(`{{${k}}}`, v == null ? "" : String(v));
+  }
+  return html;
+}
+
 app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   try {
     const {
-      tribunal, vara, processo, data_ato, pf_nome,
-      valor_centavos, valor_reais, tipo_ato,
-      banco_pagador, id_ato, link_oficial, fee_percent,
+      tribunal,
+      vara,
+      processo,
+      data_ato,
+      pf_nome,
+      valor_centavos,
+      valor_reais,
+      tipo_ato,
+      banco_pagador,
+      id_ato,
+      link_oficial,
+      fee_percent,
     } = req.body || {};
 
     const isPF = _parecePF(pf_nome);
     const cents = Number.isFinite(valor_centavos)
       ? Number(valor_centavos)
-      : Math.round(Number(String(valor_reais || 0).replace(/\./g, "").replace(",", ".")) * 100);
+      : Math.round(
+          Number(String(valor_reais || 0).replace(/\./g, "").replace(",", ".")) * 100
+        );
 
     const hasTicket = Number.isFinite(cents) && cents >= MIN_TICKET_CENTS;
     const atoPronto = RX_ALVAR.test(String(tipo_ato || ""));
@@ -776,11 +821,7 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
     const fileName = `dossie-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    });
+    const browser = await launchBrowser();
     const pg = await browser.newPage();
     await pg.setContent(html, { waitUntil: "networkidle0" });
     await pg.pdf({
@@ -793,7 +834,10 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
 
     lastPdfFile = fileName;
 
-    const pitch = `${pf_nome}, no ${tribunal} proc. ${processo} há ${tipo_ato || "e-Alvará"} de ${valorBRL} em seu nome.\nTe guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
+    const pitch = `${pf_nome}, no ${tribunal} proc. ${processo} há ${
+      tipo_ato || "e-Alvará"
+    } de ${valorBRL} em seu nome.\nTe guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
+
     return res.json({
       ok: true,
       url: `${BASE_URL}/pdf/${fileName}`,
@@ -807,7 +851,7 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   }
 });
 
-// ===== /batch
+// ===== /batch & /pack
 app.post("/batch", async (req, res) => {
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -815,6 +859,7 @@ app.post("/batch", async (req, res) => {
 
     const limit = pLimit(CONCURRENCY);
     const results = [];
+
     for (const body of items) {
       const run = async () => {
         try {
@@ -824,10 +869,13 @@ app.post("/batch", async (req, res) => {
             body: JSON.stringify(body),
           });
           return response.json();
-        } catch (e) { return { ok: false, error: String(e) }; }
+        } catch (e) {
+          return { ok: false, error: String(e) };
+        }
       };
       results.push(limit(run));
     }
+
     const out = await Promise.all(results);
 
     const csvName = `lote-${Date.now()}.csv`;
@@ -837,27 +885,36 @@ app.post("/batch", async (req, res) => {
     for (let i = 0; i < items.length; i++) {
       const c = items[i];
       const r = out[i] || {};
-      const valor = Number.isFinite(c.valor_centavos) ? centavosToBRL(c.valor_centavos) : c.valor_reais || "";
-      lines.push([
-        c.tribunal || "",
-        c.processo || "",
-        (c.pf_nome || "").replace(/,/g, " "),
-        valor,
-        r.url || "",
-        r.whatsapp || "",
-        r.ok ? "OK" : "ERRO",
-      ].map((x) => `"${String(x ?? "").replace(/"/g, '""')}"`).join(","));
+      const valor = Number.isFinite(c.valor_centavos)
+        ? centavosToBRL(c.valor_centavos)
+        : c.valor_reais || "";
+      lines.push(
+        [
+          c.tribunal || "",
+          c.processo || "",
+          (c.pf_nome || "").replace(/,/g, " "),
+          valor,
+          r.url || "",
+          r.whatsapp || "",
+          r.ok ? "OK" : "ERRO",
+        ]
+          .map((x) => `"${String(x ?? "").replace(/"/g, '""')}"`)
+          .join(",")
+      );
     }
     await fsp.writeFile(csvPath, lines.join("\n"), "utf8");
 
-    return res.json({ ok: true, items: out, csv: `${BASE_URL}/exports/${csvName}` });
+    return res.json({
+      ok: true,
+      items: out,
+      csv: `${BASE_URL}/exports/${csvName}`,
+    });
   } catch (e) {
     console.error("Erro /batch:", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// ===== /pack
 app.post("/pack", async (req, res) => {
   try {
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
@@ -874,6 +931,7 @@ app.post("/pack", async (req, res) => {
       const p = path.join(PDF_DIR, path.basename(f));
       if (fs.existsSync(p)) archive.file(p, { name: path.basename(p) });
     }
+
     await archive.finalize();
     await new Promise((resolve) => output.on("close", resolve));
 
@@ -884,7 +942,7 @@ app.post("/pack", async (req, res) => {
   }
 });
 
-// ===== Utils finais
+// ===== Aux
 app.get("/pdf/proposta.pdf", (_req, res) => {
   if (!lastPdfFile) return res.status(404).send("PDF ainda não gerado.");
   return res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
@@ -899,6 +957,7 @@ app.get("/debug/last", (_req, res) => {
 });
 
 // ===== Start
-app.listen(PORT, () => console.log(`TORRE v5.1 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`TORRE v5.2 rodando na porta ${PORT}`));
+
 process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
 process.on("uncaughtException", (e) => console.error("[uncaughtException]", e));
