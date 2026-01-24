@@ -366,6 +366,7 @@ app.get("/debug/env", (_req, res) => {
 
 // ===== DJEN (Diário de Justiça Eletrônico Nacional) =====
 const DJEN_URL = "https://comunica.pje.jus.br/";
+const DJEN_API_URL = "https://comunica.pje.jus.br/api/";
 
 // Debug: explora o DJEN
 app.get("/debug/djen", async (req, res) => {
@@ -374,110 +375,72 @@ app.get("/debug/djen", async (req, res) => {
   
   try {
     const tribunal = req.query.tribunal || "TRT15";
-    const dataParam = req.query.data || null;
     
-    const browser = await puppeteer.launch({
-      headless: "new",
-      args: [
-        "--no-sandbox", 
-        "--disable-setuid-sandbox", 
-        "--lang=pt-BR",
-        "--disable-blink-features=AutomationControlled"
-      ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    });
+    // Testa vários endpoints
+    const endpoints = [
+      { name: "DJEN principal", url: "https://comunica.pje.jus.br/" },
+      { name: "DJEN consulta", url: "https://comunica.pje.jus.br/consulta" },
+      { name: "CNJ portal", url: "https://www.cnj.jus.br/pjecnj/ConsultaPublica/listView.seam" },
+      { name: "PJe consulta TRT15", url: "https://pje.trt15.jus.br/consultaprocessual/" },
+      { name: "DataJud API", url: "https://datajud-wiki.cnj.jus.br/" }
+    ];
     
-    const page = await browser.newPage();
+    const results = [];
     
-    // User agent realista
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    await page.setViewport({ width: 1280, height: 800 });
-    await page.setExtraHTTPHeaders({ 
-      "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    });
-    
-    // Primeiro testa se o site responde com fetch simples
-    log(`[djen] Testando conectividade...`);
-    
-    try {
-      const testResponse = await fetch(DJEN_URL, {
-        method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html'
-        },
-        signal: AbortSignal.timeout(30000)
-      });
-      log(`[djen] Fetch status: ${testResponse.status}`);
-      const testHtml = await testResponse.text();
-      log(`[djen] Fetch HTML length: ${testHtml.length}`);
-      
-      if (testHtml.length < 100) {
-        await browser.close();
-        return res.json({
-          ok: false,
-          error: "Site retornou conteúdo vazio ou muito pequeno",
-          fetchStatus: testResponse.status,
-          htmlPreview: testHtml.substring(0, 500),
-          logs
-        });
-      }
-      
-      // Se o fetch funcionou, retorna o HTML diretamente
-      if (testHtml.length > 500) {
-        await browser.close();
+    for (const ep of endpoints) {
+      log(`[djen] Testando ${ep.name}...`);
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
         
-        // Analisa o HTML
-        const temForm = /<form/i.test(testHtml);
-        const temInput = /<input/i.test(testHtml);
-        const temSelect = /<select/i.test(testHtml);
-        const temTribunal = /tribunal|trt/i.test(testHtml);
-        const temPesquisa = /pesquis|busca|search/i.test(testHtml);
-        
-        return res.json({
-          ok: true,
-          method: "fetch direto",
-          tribunal,
-          htmlLength: testHtml.length,
-          analysis: {
-            temForm,
-            temInput,
-            temSelect,
-            temTribunal,
-            temPesquisa
+        const response = await fetch(ep.url, {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'pt-BR,pt;q=0.9'
           },
-          htmlPreview: testHtml.substring(0, 3000),
-          htmlMiddle: testHtml.substring(Math.floor(testHtml.length/2), Math.floor(testHtml.length/2) + 2000),
-          logs
+          signal: controller.signal
         });
+        
+        clearTimeout(timeout);
+        
+        const html = await response.text();
+        
+        results.push({
+          name: ep.name,
+          url: ep.url,
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          htmlLength: html.length,
+          hasCloudflare: html.includes('cloudflare') || html.includes('cf-'),
+          hasCaptcha: html.includes('captcha') || html.includes('challenge'),
+          preview: html.substring(0, 500)
+        });
+        
+        log(`[djen] ${ep.name}: ${response.status}, ${html.length} bytes`);
+        
+      } catch (e) {
+        results.push({
+          name: ep.name,
+          url: ep.url,
+          error: e.message
+        });
+        log(`[djen] ${ep.name}: ERRO - ${e.message}`);
       }
-    } catch (fetchErr) {
-      log(`[djen] Fetch falhou: ${fetchErr.message}`);
     }
     
-    // Se fetch falhou, tenta com Puppeteer
-    log(`[djen] Tentando com Puppeteer...`);
-    await page.goto(DJEN_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
-    await sleep(5000);
-    
-    const pageInfo = await page.evaluate(() => {
-      return {
-        title: document.title,
-        url: window.location.href,
-        bodyLength: (document.body.innerText || "").length,
-        bodyPreview: (document.body.innerText || "").substring(0, 2000)
-      };
-    });
-    
-    await browser.close();
+    // Encontra o melhor endpoint que funcionou
+    const working = results.filter(r => r.status === 200 && r.htmlLength > 500 && !r.hasCaptcha);
     
     res.json({
-      ok: true,
-      method: "puppeteer",
-      tribunal,
-      pageInfo,
-      logs
+      ok: working.length > 0,
+      workingEndpoints: working.map(w => w.name),
+      results,
+      logs,
+      sugestao: working.length > 0 
+        ? `Use o endpoint: ${working[0].name}` 
+        : "Nenhum endpoint acessível. Considere usar API DataJud ou proxy."
     });
     
   } catch (e) {
