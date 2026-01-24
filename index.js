@@ -364,6 +364,106 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// ===== DJEN (Diário de Justiça Eletrônico Nacional) =====
+const DJEN_URL = "https://comunica.pje.jus.br/";
+
+// Debug: explora o DJEN
+app.get("/debug/djen", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunal = req.query.tribunal || "TRT15";
+    const dataParam = req.query.data || null;
+    
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
+    
+    log(`[djen] Navegando para ${DJEN_URL}...`);
+    await page.goto(DJEN_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await sleep(3000);
+    
+    // Captura informações da página
+    const pageInfo = await page.evaluate(() => {
+      const body = document.body.innerText || "";
+      const html = document.body.innerHTML || "";
+      
+      // Busca formulários
+      const forms = Array.from(document.querySelectorAll('form')).map(f => ({
+        id: f.id,
+        action: f.action,
+        method: f.method
+      }));
+      
+      // Busca inputs
+      const inputs = Array.from(document.querySelectorAll('input, select, textarea')).map(i => ({
+        tag: i.tagName,
+        type: i.type,
+        id: i.id,
+        name: i.name,
+        placeholder: i.placeholder,
+        options: i.tagName === 'SELECT' ? Array.from(i.options).slice(0, 10).map(o => o.text) : null
+      }));
+      
+      // Busca botões
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a.btn, a[role="button"]')).map(b => ({
+        tag: b.tagName,
+        text: (b.textContent || b.value || "").trim().substring(0, 50),
+        id: b.id,
+        onclick: (b.getAttribute('onclick') || "").substring(0, 100)
+      }));
+      
+      // Busca links importantes
+      const links = Array.from(document.querySelectorAll('a')).filter(a => {
+        const txt = (a.textContent || "").toLowerCase();
+        return txt.includes('pesquis') || txt.includes('busca') || txt.includes('diário') || 
+               txt.includes('consulta') || txt.includes('tribunal') || txt.includes('trt');
+      }).map(a => ({
+        text: (a.textContent || "").trim().substring(0, 50),
+        href: a.href
+      }));
+      
+      return {
+        title: document.title,
+        url: window.location.href,
+        bodyLength: body.length,
+        bodyPreview: body.substring(0, 2000),
+        forms,
+        inputs: inputs.slice(0, 30),
+        buttons: buttons.slice(0, 20),
+        links: links.slice(0, 20)
+      };
+    });
+    
+    log(`[djen] Página carregada: ${pageInfo.title}`);
+    log(`[djen] Body: ${pageInfo.bodyLength} chars`);
+    log(`[djen] Forms: ${pageInfo.forms.length}, Inputs: ${pageInfo.inputs.length}, Buttons: ${pageInfo.buttons.length}`);
+    
+    // Tira screenshot para debug
+    const screenshot = await page.screenshot({ encoding: 'base64', fullPage: false });
+    
+    await browser.close();
+    
+    res.json({
+      ok: true,
+      tribunal,
+      pageInfo,
+      screenshotBase64: screenshot.substring(0, 1000) + '...(truncated)',
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // Debug: baixa o PDF do caderno e extrai texto
 app.get("/debug/pdf", async (req, res) => {
   const logs = [];
@@ -484,35 +584,44 @@ app.get("/debug/pdf", async (req, res) => {
         const texto = pdfData.text || '';
         log(`[pdf] Texto extraído: ${texto.length} chars, ${pdfData.numpages} páginas`);
         
-        // Busca alvarás judiciais - termos mais simples
+        // Busca termos relacionados a pagamentos judiciais
         const alvaras = [];
         const linhas = texto.split('\n');
         
-        // Primeiro, vamos ver se existe "alvará" ou "levantamento" no texto
-        const temAlvara = /alvara|alvará/i.test(texto);
-        const temLevantamento = /levantamento/i.test(texto);
-        const temExpeca = /expe[çc]a/i.test(texto);
-        const temDefiro = /defiro/i.test(texto);
-        const temPaguese = /pague-se|paguese/i.test(texto);
+        // Debug: verificar existência de termos
+        const textoLower = texto.toLowerCase();
+        const temAlvara = textoLower.includes('alvará') || textoLower.includes('alvara');
+        const temLevantamento = textoLower.includes('levantamento');
+        const temExpeca = textoLower.includes('expeça') || textoLower.includes('expeca');
+        const temDefiro = textoLower.includes('defiro');
+        const temPaguese = textoLower.includes('pague-se') || textoLower.includes('paguese');
+        const temGuia = textoLower.includes('guia de depósito') || textoLower.includes('guia de deposito');
+        const temCredito = textoLower.includes('crédito do exequente') || textoLower.includes('credito do exequente');
+        const temValorLiberado = textoLower.includes('valor liberado') || textoLower.includes('liberação do valor');
+        const temSaque = textoLower.includes('autorizo o saque') || textoLower.includes('saque autorizado');
+        const temDeposito = textoLower.includes('depósito judicial') || textoLower.includes('deposito judicial');
+        const temHomologacao = textoLower.includes('homolog') && textoLower.includes('acordo');
         
         for (let i = 0; i < linhas.length; i++) {
           const linha = linhas[i].toLowerCase();
           
-          // Termos que indicam alvará de pagamento
+          // Termos que indicam pagamento/alvará
           if (
             linha.includes('alvara') || linha.includes('alvará') ||
             linha.includes('levantamento') ||
             (linha.includes('expe') && linha.includes('a-se')) ||
             linha.includes('pague-se') ||
             (linha.includes('defiro') && (linha.includes('saque') || linha.includes('levant'))) ||
-            (linha.includes('autorizo') && (linha.includes('saque') || linha.includes('levant')))
+            (linha.includes('autorizo') && (linha.includes('saque') || linha.includes('levant'))) ||
+            linha.includes('guia de levantamento') ||
+            linha.includes('valor liberado') ||
+            (linha.includes('libera') && linha.includes('depósito')) ||
+            (linha.includes('libera') && linha.includes('deposito'))
           ) {
-            // Pega contexto amplo
             const inicio = Math.max(0, i - 15);
             const fim = Math.min(linhas.length, i + 15);
             const contexto = linhas.slice(inicio, fim).join('\n');
             
-            // Extrai informações
             const processoMatch = contexto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/);
             const valorMatch = contexto.match(/R\$\s*([\d.,]+)/);
             
@@ -526,7 +635,7 @@ app.get("/debug/pdf", async (req, res) => {
           }
         }
         
-        // Remove duplicatas por processo
+        // Remove duplicatas
         const alvarasUnicos = [];
         const processosVistos = new Set();
         for (const a of alvaras) {
@@ -537,8 +646,8 @@ app.get("/debug/pdf", async (req, res) => {
           }
         }
         
-        // Debug: amostra do texto para entender o formato
-        const amostraTexto = texto.substring(50000, 55000); // Pega do meio do documento
+        // Amostra do texto
+        const amostraTexto = texto.substring(50000, 55000);
         
         const processos = [...new Set(texto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/g) || [])];
         const valores = texto.match(/R\$\s*[\d.,]+/g) || [];
@@ -553,7 +662,13 @@ app.get("/debug/pdf", async (req, res) => {
             temLevantamento, 
             temExpeca,
             temDefiro,
-            temPaguese
+            temPaguese,
+            temGuia,
+            temCredito,
+            temValorLiberado,
+            temSaque,
+            temDeposito,
+            temHomologacao
           },
           alvarasEncontrados: alvarasUnicos.length,
           alvaras: alvarasUnicos.slice(0, 10),
