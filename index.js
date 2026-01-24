@@ -362,6 +362,150 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// Debug: testa especificamente o download do caderno
+app.get("/debug/download", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunais = String(req.query.tribunais || "TRT15");
+    const dataParam = req.query.data || null;
+    
+    const d = dataParam ? new Date(dataParam) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    
+    // Intercepta todas as respostas
+    const responses = [];
+    page.on('response', response => {
+      const url = response.url();
+      const status = response.status();
+      const contentType = response.headers()['content-type'] || '';
+      if (url.includes('dejt') || url.includes('diario')) {
+        responses.push({ url: url.substring(0, 150), status, contentType: contentType.substring(0, 50) });
+      }
+    });
+    
+    // Intercepta novas páginas/popups
+    const newPages = [];
+    browser.on('targetcreated', async (target) => {
+      const type = target.type();
+      const url = target.url();
+      newPages.push({ type, url: url.substring(0, 150) });
+    });
+    
+    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
+    await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await sleep(2000);
+    
+    // Configura formulário
+    await page.evaluate((dataPt) => {
+      const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+      for (const r of radios) {
+        if (r.value === "J" || /judici/i.test(r.id || "")) {
+          r.checked = true; r.click();
+        }
+      }
+      const all = Array.from(document.querySelectorAll("input"));
+      const ini = all.find(i => /data.?ini/i.test((i.id || "") + (i.name || "")));
+      const fim = all.find(i => /data.?fim/i.test((i.id || "") + (i.name || "")));
+      if (ini) { ini.value = dataPt; ini.dispatchEvent(new Event("change", { bubbles: true })); }
+      if (fim) { fim.value = dataPt; fim.dispatchEvent(new Event("change", { bubbles: true })); }
+    }, dataPt);
+    
+    const numTribunal = tribunais.replace(/\D/g, "");
+    await page.evaluate((num) => {
+      const selects = document.querySelectorAll('select');
+      for (const sel of selects) {
+        for (const opt of sel.options) {
+          const numOpt = (opt.textContent || "").replace(/\D/g, "");
+          if (numOpt === num) {
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            return;
+          }
+        }
+      }
+    }, numTribunal);
+    
+    await sleep(1000);
+    log("[download] Pesquisando...");
+    await clickPesquisarReal(page);
+    await waitJsfResult(page, 900);
+    
+    // Verifica se tem o link de download
+    const linkInfo = await page.evaluate(() => {
+      const link = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"]');
+      if (!link) return null;
+      return {
+        href: link.getAttribute('href'),
+        onclick: link.getAttribute('onclick'),
+        classe: link.className,
+        html: link.outerHTML.substring(0, 300)
+      };
+    });
+    log(`[download] Link encontrado: ${JSON.stringify(linkInfo)}`);
+    
+    if (linkInfo) {
+      log("[download] Clicando no link de download...");
+      
+      // Limpa respostas anteriores
+      responses.length = 0;
+      
+      // Usa page.click real em vez de eval
+      await page.click('a.link-download');
+      
+      // Espera respostas
+      await sleep(5000);
+      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+      
+      log(`[download] Respostas capturadas: ${responses.length}`);
+      log(`[download] Novas páginas: ${newPages.length}`);
+      
+      // Verifica todas as páginas abertas
+      const pages = await browser.pages();
+      log(`[download] Total de páginas abertas: ${pages.length}`);
+      
+      const pagesInfo = [];
+      for (const p of pages) {
+        const url = p.url();
+        const title = await p.title().catch(() => '');
+        const bodyLen = await p.evaluate(() => document.body?.innerText?.length || 0).catch(() => 0);
+        pagesInfo.push({ url: url.substring(0, 150), title, bodyLen });
+      }
+      
+      // Verifica se a página atual mudou
+      const currentUrl = page.url();
+      const currentBody = await page.evaluate(() => document.body.innerText.length);
+      log(`[download] Página atual: ${currentUrl}, body: ${currentBody}`);
+    }
+    
+    await browser.close();
+    
+    res.json({
+      ok: true,
+      data: dataPt,
+      linkInfo,
+      responses: responses.slice(-20),
+      newPages,
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // Debug: mostra estrutura HTML da área de cadernos após pesquisa
 app.get("/debug/caderno", async (req, res) => {
   const logs = [];
