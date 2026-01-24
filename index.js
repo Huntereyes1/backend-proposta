@@ -1,4 +1,4 @@
-// index.js — TORRE PF e-Alvará (TRT) — v5.1 (fix captura PDF via Puppeteer)
+// index.js — TORRE PF e-Alvará (TRT) — v5.2 (fix: captura PDF via evento de download do Chrome)
 // Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/*
 
 import express from "express";
@@ -47,7 +47,7 @@ app.use("/pdf", express.static(PDF_DIR, {
 }));
 app.use("/exports", express.static(EXPORTS_DIR));
 
-app.get("/", (_req, res) => res.send("Backend TORRE v5.1 — DEJT PDF direto via Puppeteer"));
+app.get("/", (_req, res) => res.send("Backend TORRE v5.2 — DEJT PDF direto via download nativo do Chrome"));
 app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
 
 // ===== Utils
@@ -228,7 +228,7 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
-// NOVO: captura PDF direto da resposta Puppeteer (sem refetch)
+// NOVO /debug/download: captura via download nativo (sem buffer())
 app.get("/debug/download", async (req, res) => {
   const logs = [];
   const log = (m) => { console.log(m); logs.push(m); };
@@ -247,11 +247,29 @@ app.get("/debug/download", async (req, res) => {
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     });
+
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
 
-    // coleta de respostas só para debug
+    // habilita downloads no diretório PDF_DIR
+    // OBS: algumas versões usam page._client(); em outras Browser._connection. page._client() é o caminho mais compatível.
+    try {
+      await page._client().send("Page.setDownloadBehavior", {
+        behavior: "allow",
+        downloadPath: PDF_DIR,
+      });
+    } catch (e) {
+      // fallback em algumas builds antigas
+      try {
+        await browser._connection.send("Browser.setDownloadBehavior", {
+          behavior: "allow",
+          downloadPath: PDF_DIR,
+        });
+      } catch {}
+    }
+
+    // coleta de respostas só para debug (não usamos buffer do response)
     const responses = [];
     page.on('response', (r) => {
       const url = r.url();
@@ -314,10 +332,32 @@ app.get("/debug/download", async (req, res) => {
 
     if (!linkInfo) {
       await browser.close();
-      return res.json({ ok: true, data: dataPt, linkInfo: null, responses, newPages: [], pdf_saved: false, url_pdf: null, reason: "sem-link-download", logs });
+      return res.json({
+        ok: true, data: dataPt, linkInfo: null,
+        responses, newPages: [],
+        pdf_saved: false, url_pdf: null, reason: "sem-link-download", logs
+      });
     }
 
-    // Dispara o onclick / click e espera a RESPOSTA PDF
+    // prepara listener único de download
+    let savedPath = null;
+    let savedName = null;
+    const waitDownload = new Promise((resolve) => {
+      page.once("download", async (dl) => {
+        try {
+          const suggested = dl.suggestedFilename();
+          const finalPath = path.join(PDF_DIR, suggested || `dejt-${Date.now()}.pdf`);
+          await dl.saveAs(finalPath);
+          savedPath = finalPath;
+          savedName = path.basename(finalPath);
+          resolve(true);
+        } catch (e) {
+          resolve(false);
+        }
+      });
+    });
+
+    // dispara o onclick/click que inicia o download
     const triggerOk = await page.evaluate(() => {
       const link = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"]');
       if (!link) return "no-link";
@@ -326,45 +366,20 @@ app.get("/debug/download", async (req, res) => {
       try {
         if (oc) { eval(cleaned); return "eval"; }
         link.click(); return "click";
-      } catch { link.click(); return "click-fallback"; }
+      } catch {
+        link.click(); return "click-fallback";
+      }
     });
 
-    // Espera a resposta "application/pdf" ou URL do diariocon com 200
-    let pdfResponse = null;
-    try {
-      pdfResponse = await page.waitForResponse((r) => {
-        const ct = (r.headers()['content-type'] || '').toLowerCase();
-        const okCt = ct.includes('application/pdf');
-        const okUrl = /\/dejt\/f\/n\/diariocon/i.test(r.url()); // endpoint que retorna o PDF
-        return (okCt || okUrl) && r.status() === 200 && r.request().method() !== 'OPTIONS';
-      }, { timeout: 15000 });
-    } catch (e) {
-      // nada
-    }
+    // espera o download terminar (ou timeouts da própria página acima)
+    await Promise.race([
+      waitDownload,
+      sleep(20000) // 20s de guarda
+    ]);
 
-    let pdf_saved = false;
-    let url_pdf = null;
-    let reason = null;
-
-    if (!pdfResponse) {
-      reason = "sem-response-pdf";
-    } else {
-      try {
-        const buf = await pdfResponse.buffer();
-        if (buf && buf.length > 1000) {
-          const fileName = `caderno-${numTrib}-${yyyy}${mm}${dd}.pdf`;
-          const filePath = path.join(PDF_DIR, fileName);
-          await fsp.writeFile(filePath, buf);
-          pdf_saved = true;
-          url_pdf = `${BASE_URL}/pdf/${fileName}`;
-          lastPdfFile = fileName;
-        } else {
-          reason = "empty-buffer";
-        }
-      } catch (e) {
-        reason = "buffer-fail: " + (e?.message || e);
-      }
-    }
+    const pdf_saved = !!savedPath;
+    const url_pdf = pdf_saved ? `${BASE_URL}/pdf/${savedName}` : null;
+    if (pdf_saved) lastPdfFile = savedName;
 
     await browser.close();
 
@@ -376,7 +391,7 @@ app.get("/debug/download", async (req, res) => {
       newPages: [],
       pdf_saved,
       url_pdf,
-      reason,
+      reason: pdf_saved ? null : "no-download-event",
       trigger: triggerOk,
       logs
     });
@@ -629,7 +644,7 @@ app.get("/debug/pesquisa", async (req, res) => {
   }
 });
 
-// ===== MINERADOR PRINCIPAL (igual antes; varre links após abrir caderno)
+// ===== MINERADOR PRINCIPAL (varre links após abrir caderno)
 async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   if (DEMO) return { items: [], registrosBrutos: [], totalBruto: 0, discards: {} };
   const logs = [];
@@ -1094,6 +1109,6 @@ app.get("/debug/last", (_req, res) => {
 });
 
 // ===== Start
-app.listen(PORT, () => console.log(`TORRE v5.1 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`TORRE v5.2 rodando na porta ${PORT}`));
 process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
 process.on("uncaughtException", (e) => console.error("[uncaughtException]", e));
