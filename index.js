@@ -118,6 +118,122 @@ const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 // Helper para esperar (substitui waitForTimeout que foi removido do Puppeteer)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper: extrai URL de window.open() no onclick
+function extractWindowOpenUrl(onclick) {
+  if (!onclick) return null;
+  const m = String(onclick).match(/window\.open\(['"]([^'"]+)['"]/i);
+  if (!m) return null;
+  return m[1].startsWith('http') ? m[1] : 'https://dejt.jt.jus.br' + m[1];
+}
+
+// Helper: abre o primeiro caderno do tribunal na listagem
+async function openFirstCaderno(page, tribunalNumero) {
+  const tryIn = async (ctx) => {
+    try {
+      // 1) Tenta achar botão "Baixar" ou link do caderno via XPath
+      const handles = await ctx.$$('a, button, input[type="button"]');
+      
+      for (const handle of handles) {
+        const info = await handle.evaluate(el => ({
+          texto: (el.textContent || el.value || "").trim(),
+          href: el.getAttribute("href") || "",
+          onclick: el.getAttribute("onclick") || ""
+        }));
+        
+        // Verifica se é link de baixar/visualizar caderno
+        const textoLower = info.texto.toLowerCase();
+        if (textoLower.includes("baixar") || textoLower.includes("download") ||
+            info.onclick.includes("window.open") || 
+            (info.href && info.href.includes("download"))) {
+          
+          // Se tem window.open, extrai URL e navega
+          const urlFromOnclick = extractWindowOpenUrl(info.onclick);
+          if (urlFromOnclick) {
+            await ctx.goto(urlFromOnclick, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            return 'goto(url caderno)';
+          }
+          
+          // Se tem href válido
+          if (info.href && info.href !== '#' && !info.href.startsWith('javascript:')) {
+            const url = info.href.startsWith('http') ? info.href : 'https://dejt.jt.jus.br' + info.href;
+            await ctx.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            return 'goto(href caderno)';
+          }
+          
+          // Clica diretamente
+          await handle.evaluate(el => el.scrollIntoView({ block: 'center' }));
+          await handle.click({ delay: 30 });
+          return 'click(baixar)';
+        }
+      }
+      
+      // 2) Fallback: procura link que contenha "Edição" ou "Caderno"
+      for (const handle of handles) {
+        const texto = await handle.evaluate(el => (el.textContent || "").trim());
+        if (/Edi[çc][ãa]o.*Caderno|Caderno.*TRT/i.test(texto)) {
+          await handle.evaluate(el => el.scrollIntoView({ block: 'center' }));
+          await handle.click({ delay: 30 });
+          return 'click(título caderno)';
+        }
+      }
+      
+      // 3) Procura qualquer elemento clicável na área de resultados
+      const trs = await ctx.$$('tr');
+      for (const tr of trs) {
+        const texto = await tr.evaluate(el => el.textContent || "");
+        if (/Edi[çc][ãa]o|Caderno.*Judici/i.test(texto)) {
+          const link = await tr.$('a');
+          if (link) {
+            const onclick = await link.evaluate(el => el.getAttribute('onclick') || "");
+            const href = await link.evaluate(el => el.getAttribute('href') || "");
+            
+            const urlFromOnclick = extractWindowOpenUrl(onclick);
+            if (urlFromOnclick) {
+              await ctx.goto(urlFromOnclick, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+              return 'goto(url da tr)';
+            }
+            
+            if (href && href !== '#') {
+              const url = href.startsWith('http') ? href : 'https://dejt.jt.jus.br' + href;
+              await ctx.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+              return 'goto(href da tr)';
+            }
+            
+            await link.click({ delay: 30 });
+            return 'click(link na tr)';
+          }
+        }
+      }
+      
+      return null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // Tenta no main frame
+  let how = await tryIn(page);
+  if (how) return how;
+
+  // Tenta nos iframes
+  for (const f of page.frames()) {
+    if (f === page.mainFrame()) continue;
+    how = await tryIn(f);
+    if (how) return how + ' (iframe)';
+  }
+  
+  return 'caderno-não-encontrado';
+}
+
+// Helper: espera o caderno carregar
+async function waitCadernoLoaded(page) {
+  await Promise.race([
+    page.waitForSelector("table, .ui-datatable, .rich-table, a[href*='teor'], a[href*='visualizar']", { timeout: 15000 }),
+    page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {})
+  ]).catch(() => {});
+  await sleep(1500);
+}
+
 // Helper: clique REAL no botão Pesquisar (varre main frame + iframes)
 async function clickPesquisarReal(page) {
   const tryClickIn = async (ctx) => {
@@ -447,8 +563,28 @@ app.get("/debug/pesquisa", async (req, res) => {
     let afterLen = await page.evaluate(() => document.body.innerText.length);
     log(`[debug] Body após primeiro disparo: ${afterLen} chars`);
     
-    // Se ainda pequeno, tenta novamente
-    if (afterLen < 3000) {
+    // Verifica se apareceu resultado da pesquisa (listagem de cadernos)
+    const temCaderno = await page.evaluate(() => {
+      const body = document.body.innerText || "";
+      return /Edi[çc][ãa]o\s+\d+/i.test(body) || /Caderno.*Judici/i.test(body);
+    });
+    
+    if (temCaderno) {
+      log("[debug] Caderno encontrado na listagem! Abrindo...");
+      
+      // Abre o caderno do TRT solicitado
+      const numTribunal = tribunais.replace(/\D/g, '') || '15';
+      const howCaderno = await openFirstCaderno(page, numTribunal);
+      log(`[debug] Abrindo caderno: ${howCaderno}`);
+      
+      await waitCadernoLoaded(page);
+      
+      afterLen = await page.evaluate(() => document.body.innerText.length);
+      log(`[debug] Body após abrir caderno: ${afterLen} chars`);
+    }
+    
+    // Se ainda pequeno e não tem caderno, tenta novamente
+    if (afterLen < 3000 && !temCaderno) {
       log("[debug] Body ainda pequeno, tentando novamente com clique real...");
       
       // Tenta também pressionar Enter como fallback
@@ -465,25 +601,35 @@ app.get("/debug/pesquisa", async (req, res) => {
       log(`[debug] Body após segundo disparo: ${afterLen} chars`);
     }
     
-    // Captura resultado
+    // Captura resultado com links de atos
     const resultado = await page.evaluate(() => {
       const body = document.body.innerText || "";
       const links = [];
       document.querySelectorAll("a").forEach(a => {
-        const texto = (a.textContent || "").trim().substring(0, 50);
-        const href = (a.href || "").substring(0, 100);
-        if (texto || href) links.push({ texto, href });
+        const texto = (a.textContent || "").trim();
+        const href = a.getAttribute("href") || "";
+        if (texto || href) links.push({ texto: texto.substring(0, 80), href: href.substring(0, 300) });
       });
-      
-      // Busca especificamente por links de "visualizar" ou similares
-      const linksVisualizacao = [];
+
+      // Links mais prováveis de abrir ato
+      const linksAto = [];
       document.querySelectorAll("a").forEach(a => {
-        const texto = (a.textContent || "").toLowerCase();
-        if (texto.includes("visualizar") || texto.includes("inteiro") || texto.includes("conteúdo")) {
-          linksVisualizacao.push({ texto: a.textContent, href: a.href });
+        const t = (a.textContent || "").toLowerCase();
+        const h = (a.getAttribute("href") || "").toLowerCase();
+        const oc = (a.getAttribute("onclick") || "").toLowerCase();
+        if (
+          t.includes("visualizar") || t.includes("inteiro") || t.includes("conteúdo") || t.includes("conteudo") ||
+          h.includes("visualizar") || h.includes("inteiro") || h.includes("conteudo") || h.includes("conteúdo") ||
+          h.includes("teor") || oc.includes("window.open")
+        ) {
+          linksAto.push({ 
+            texto: (a.textContent || "").substring(0, 50), 
+            href: a.getAttribute("href") || "", 
+            onclick: (a.getAttribute("onclick") || "").substring(0, 100) 
+          });
         }
       });
-      
+
       return {
         tamanhoBody: body.length,
         temAlvara: /alvar[aá]/i.test(body),
@@ -491,12 +637,12 @@ app.get("/debug/pesquisa", async (req, res) => {
         trechoBody: body.substring(0, 3000),
         totalLinks: links.length,
         primeirosLinks: links.slice(0, 15),
-        linksVisualizacao
+        linksAto: linksAto.slice(0, 20)
       };
     });
     
     log(`[debug] Body final: ${resultado.tamanhoBody} chars, alvará: ${resultado.temAlvara}, processo: ${resultado.temProcesso}`);
-    log(`[debug] Links de visualização: ${resultado.linksVisualizacao.length}`);
+    log(`[debug] Links de ato: ${resultado.linksAto.length}`);
     
     await browser.close();
     
@@ -877,10 +1023,31 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       return {
         temAlvara: /alvar[aá]/i.test(body),
         temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
-        tamanhoBody: body.length
+        tamanhoBody: body.length,
+        temCaderno: /Edi[çc][ãa]o\s+\d+/i.test(body) || /Caderno.*Judici/i.test(body)
       };
     });
-    log(`[miner] Resultados: alvará=${temResultados.temAlvara}, processo=${temResultados.temProcesso}, tam=${temResultados.tamanhoBody}`);
+    log(`[miner] Resultados: alvará=${temResultados.temAlvara}, processo=${temResultados.temProcesso}, tam=${temResultados.tamanhoBody}, caderno=${temResultados.temCaderno}`);
+
+    // Se encontrou listagem de cadernos, abre o caderno
+    if (temResultados.temCaderno) {
+      log(`[miner] Caderno encontrado, abrindo...`);
+      const num = String(orgao).replace(/\D/g, '') || '15';
+      const howCad = await openFirstCaderno(page, num);
+      log(`[miner] Abriu caderno: ${howCad}`);
+      await waitCadernoLoaded(page);
+      
+      // Atualiza verificação
+      const afterCaderno = await page.evaluate(() => {
+        const body = document.body.innerText || "";
+        return {
+          temAlvara: /alvar[aá]/i.test(body),
+          temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
+          tamanhoBody: body.length
+        };
+      });
+      log(`[miner] Após abrir caderno: alvará=${afterCaderno.temAlvara}, processo=${afterCaderno.temProcesso}, tam=${afterCaderno.tamanhoBody}`);
+    }
 
     // Coleta links de atos (Visualizar, Inteiro Teor, etc)
     const linksAtos = await page.evaluate(() => {
