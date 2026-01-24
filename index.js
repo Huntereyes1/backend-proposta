@@ -378,88 +378,105 @@ app.get("/debug/djen", async (req, res) => {
     
     const browser = await puppeteer.launch({
       headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      args: [
+        "--no-sandbox", 
+        "--disable-setuid-sandbox", 
+        "--lang=pt-BR",
+        "--disable-blink-features=AutomationControlled"
+      ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     });
     
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
     
-    log(`[djen] Navegando para ${DJEN_URL}...`);
-    await page.goto(DJEN_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+    // User agent realista
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.setExtraHTTPHeaders({ 
+      "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    });
+    
+    // Primeiro testa se o site responde com fetch simples
+    log(`[djen] Testando conectividade...`);
+    
+    try {
+      const testResponse = await fetch(DJEN_URL, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html'
+        },
+        signal: AbortSignal.timeout(30000)
+      });
+      log(`[djen] Fetch status: ${testResponse.status}`);
+      const testHtml = await testResponse.text();
+      log(`[djen] Fetch HTML length: ${testHtml.length}`);
+      
+      if (testHtml.length < 100) {
+        await browser.close();
+        return res.json({
+          ok: false,
+          error: "Site retornou conteúdo vazio ou muito pequeno",
+          fetchStatus: testResponse.status,
+          htmlPreview: testHtml.substring(0, 500),
+          logs
+        });
+      }
+      
+      // Se o fetch funcionou, retorna o HTML diretamente
+      if (testHtml.length > 500) {
+        await browser.close();
+        
+        // Analisa o HTML
+        const temForm = /<form/i.test(testHtml);
+        const temInput = /<input/i.test(testHtml);
+        const temSelect = /<select/i.test(testHtml);
+        const temTribunal = /tribunal|trt/i.test(testHtml);
+        const temPesquisa = /pesquis|busca|search/i.test(testHtml);
+        
+        return res.json({
+          ok: true,
+          method: "fetch direto",
+          tribunal,
+          htmlLength: testHtml.length,
+          analysis: {
+            temForm,
+            temInput,
+            temSelect,
+            temTribunal,
+            temPesquisa
+          },
+          htmlPreview: testHtml.substring(0, 3000),
+          htmlMiddle: testHtml.substring(Math.floor(testHtml.length/2), Math.floor(testHtml.length/2) + 2000),
+          logs
+        });
+      }
+    } catch (fetchErr) {
+      log(`[djen] Fetch falhou: ${fetchErr.message}`);
+    }
+    
+    // Se fetch falhou, tenta com Puppeteer
+    log(`[djen] Tentando com Puppeteer...`);
+    await page.goto(DJEN_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
     await sleep(5000);
     
-    // Espera algum elemento aparecer
-    await page.waitForSelector('body', { timeout: 30000 }).catch(() => {});
-    await sleep(2000);
-    
-    // Captura informações da página
     const pageInfo = await page.evaluate(() => {
-      const body = document.body.innerText || "";
-      const html = document.body.innerHTML || "";
-      
-      // Busca formulários
-      const forms = Array.from(document.querySelectorAll('form')).map(f => ({
-        id: f.id,
-        action: f.action,
-        method: f.method
-      }));
-      
-      // Busca inputs
-      const inputs = Array.from(document.querySelectorAll('input, select, textarea')).map(i => ({
-        tag: i.tagName,
-        type: i.type,
-        id: i.id,
-        name: i.name,
-        placeholder: i.placeholder,
-        options: i.tagName === 'SELECT' ? Array.from(i.options).slice(0, 10).map(o => o.text) : null
-      }));
-      
-      // Busca botões
-      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a.btn, a[role="button"]')).map(b => ({
-        tag: b.tagName,
-        text: (b.textContent || b.value || "").trim().substring(0, 50),
-        id: b.id,
-        onclick: (b.getAttribute('onclick') || "").substring(0, 100)
-      }));
-      
-      // Busca links importantes
-      const links = Array.from(document.querySelectorAll('a')).filter(a => {
-        const txt = (a.textContent || "").toLowerCase();
-        return txt.includes('pesquis') || txt.includes('busca') || txt.includes('diário') || 
-               txt.includes('consulta') || txt.includes('tribunal') || txt.includes('trt');
-      }).map(a => ({
-        text: (a.textContent || "").trim().substring(0, 50),
-        href: a.href
-      }));
-      
       return {
         title: document.title,
         url: window.location.href,
-        bodyLength: body.length,
-        bodyPreview: body.substring(0, 2000),
-        forms,
-        inputs: inputs.slice(0, 30),
-        buttons: buttons.slice(0, 20),
-        links: links.slice(0, 20)
+        bodyLength: (document.body.innerText || "").length,
+        bodyPreview: (document.body.innerText || "").substring(0, 2000)
       };
     });
-    
-    log(`[djen] Página carregada: ${pageInfo.title}`);
-    log(`[djen] Body: ${pageInfo.bodyLength} chars`);
-    log(`[djen] Forms: ${pageInfo.forms.length}, Inputs: ${pageInfo.inputs.length}, Buttons: ${pageInfo.buttons.length}`);
-    
-    // Tira screenshot para debug
-    const screenshot = await page.screenshot({ encoding: 'base64', fullPage: false });
     
     await browser.close();
     
     res.json({
       ok: true,
+      method: "puppeteer",
       tribunal,
       pageInfo,
-      screenshotBase64: screenshot.substring(0, 1000) + '...(truncated)',
       logs
     });
     
