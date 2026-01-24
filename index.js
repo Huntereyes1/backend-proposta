@@ -118,6 +118,68 @@ const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 // Helper para esperar (substitui waitForTimeout que foi removido do Puppeteer)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper: clique REAL no botão Pesquisar (varre main frame + iframes)
+async function clickPesquisarReal(page) {
+  const tryClickIn = async (ctx) => {
+    try {
+      // ID conhecido (escape de : para CSS)
+      const selId = '[id="corpo:formulario:botaoAcaoPesquisar"]';
+      const btn = await ctx.$(selId);
+      if (btn) {
+        await ctx.$eval(selId, el => el.scrollIntoView({ block: 'center' }));
+        await ctx.click(selId, { delay: 30 });
+        return 'page.click(corpo:formulario:botaoAcaoPesquisar)';
+      }
+      
+      // Fallback por value "Pesquisar"
+      const btnPesquisar = await ctx.$('input[value="Pesquisar"]');
+      if (btnPesquisar) {
+        await ctx.$eval('input[value="Pesquisar"]', el => el.scrollIntoView({ block: 'center' }));
+        await ctx.click('input[value="Pesquisar"]', { delay: 30 });
+        return 'page.click(input[value=Pesquisar])';
+      }
+      
+      return null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // Tenta no main frame
+  let how = await tryClickIn(page);
+  if (how) return how;
+
+  // Tenta nos iframes
+  for (const f of page.frames()) {
+    if (f === page.mainFrame()) continue;
+    how = await tryClickIn(f);
+    if (how) return how + ' (in iframe)';
+  }
+  
+  return 'no-button-found';
+}
+
+// Helper: espera resultado do JSF (POST + crescimento do body)
+async function waitJsfResult(page, beforeLen) {
+  // Espera um POST JSF
+  await Promise.race([
+    page.waitForResponse(r => r.request().method() === 'POST', { timeout: 15000 }),
+    page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {})
+  ]).catch(() => {});
+
+  // Espera algum seletor típico de resultado
+  await page.waitForSelector("table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar']", { timeout: 12000 }).catch(() => {});
+
+  // E o body crescer
+  await page.waitForFunction(
+    prev => (document.body.innerText || '').length > prev + 500,
+    { timeout: 20000 }, 
+    beforeLen
+  ).catch(() => {});
+  
+  await sleep(1000);
+}
+
 // Helper: dispara pesquisa via JSF/Ajax - PRIORIZA onclick do botão
 async function dispararPesquisaJSF(page) {
   return await page.evaluate(() => {
@@ -356,8 +418,8 @@ app.get("/debug/pesquisa", async (req, res) => {
     log(`[debug] Tribunal selecionado: ${selecionouTribunal}`);
     await sleep(1000);
     
-    // 4. Dispara pesquisa via JSF/Ajax
-    log("[debug] Disparando pesquisa via JSF...");
+    // 4. Dispara pesquisa - usa clique REAL do Puppeteer
+    log("[debug] Disparando pesquisa com clique real...");
     
     // Captura tamanho antes
     const beforeLen = await page.evaluate(() => document.body.innerText.length);
@@ -374,24 +436,12 @@ app.get("/debug/pesquisa", async (req, res) => {
     });
     log(`[debug] Funções JSF disponíveis: ${JSON.stringify(jsfInfo)}`);
     
-    // Dispara
-    const how = await dispararPesquisaJSF(page);
-    log(`[debug] Método de disparo: ${how}`);
+    // Clique real no botão
+    const how = await clickPesquisarReal(page);
+    log(`[debug] Método de disparo real: ${how}`);
     
-    // Espera Ajax + mudança real de conteúdo
-    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
-    
-    // Espera aparecer algum seletor de resultados
-    await page.waitForSelector("table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar'], a[onclick*='visualizar']", { timeout: 15000 }).catch(() => {});
-    
-    // Espera o body crescer (indica que carregou resultados)
-    await page.waitForFunction(
-      (prev) => (document.body.innerText || "").length > prev + 500,
-      { timeout: 20000 },
-      beforeLen
-    ).catch(() => {});
-    
-    await sleep(2000);
+    // Espera resultado JSF
+    await waitJsfResult(page, beforeLen);
     
     // Verifica tamanho após
     let afterLen = await page.evaluate(() => document.body.innerText.length);
@@ -399,15 +449,18 @@ app.get("/debug/pesquisa", async (req, res) => {
     
     // Se ainda pequeno, tenta novamente
     if (afterLen < 3000) {
-      log("[debug] Body ainda pequeno, tentando novamente...");
-      await dispararPesquisaJSF(page);
-      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 20000 }).catch(() => {});
-      await page.waitForFunction(
-        (prev) => (document.body.innerText || "").length > prev + 500,
-        { timeout: 15000 },
-        afterLen
-      ).catch(() => {});
-      await sleep(2000);
+      log("[debug] Body ainda pequeno, tentando novamente com clique real...");
+      
+      // Tenta também pressionar Enter como fallback
+      try {
+        await page.keyboard.press('Enter');
+        await sleep(500);
+      } catch (e) {}
+      
+      const before2 = afterLen;
+      await clickPesquisarReal(page);
+      await waitJsfResult(page, before2);
+      
       afterLen = await page.evaluate(() => document.body.innerText.length);
       log(`[debug] Body após segundo disparo: ${afterLen} chars`);
     }
@@ -781,31 +834,19 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
     await sleep(1000);
 
-    // Clica em Pesquisar usando JSF/Ajax
+    // Clica em Pesquisar usando clique REAL do Puppeteer
     try {
-      log(`[miner] Disparando pesquisa via JSF...`);
+      log(`[miner] Disparando pesquisa com clique real...`);
       
       // Captura tamanho antes
       const beforeLen = await page.evaluate(() => document.body.innerText.length);
       
-      // Dispara via JSF
-      const how = await dispararPesquisaJSF(page);
+      // Clique real no botão
+      const how = await clickPesquisarReal(page);
       log(`[miner] Método de disparo: ${how}`);
       
-      // Espera Ajax + mudança real de conteúdo
-      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
-      
-      // Espera aparecer algum seletor de resultados
-      await page.waitForSelector("table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar'], a[onclick*='visualizar']", { timeout: 15000 }).catch(() => {});
-      
-      // Espera o body crescer
-      await page.waitForFunction(
-        (prev) => (document.body.innerText || "").length > prev + 500,
-        { timeout: 20000 },
-        beforeLen
-      ).catch(() => {});
-      
-      await sleep(2000);
+      // Espera resultado JSF
+      await waitJsfResult(page, beforeLen);
       
       // Verifica tamanho após
       let afterLen = await page.evaluate(() => document.body.innerText.length);
@@ -814,9 +855,16 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       // Se ainda pequeno, tenta novamente
       if (afterLen < 3000) {
         log(`[miner] Body pequeno, tentando novamente...`);
-        await dispararPesquisaJSF(page);
-        await page.waitForNetworkIdle({ idleTime: 2000, timeout: 20000 }).catch(() => {});
-        await sleep(2000);
+        
+        // Tenta Enter como fallback
+        try { await page.keyboard.press('Enter'); await sleep(500); } catch (e) {}
+        
+        const before2 = afterLen;
+        await clickPesquisarReal(page);
+        await waitJsfResult(page, before2);
+        
+        afterLen = await page.evaluate(() => document.body.innerText.length);
+        log(`[miner] Body após segundo disparo: ${afterLen}`);
       }
       
     } catch (e) {
