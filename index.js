@@ -317,7 +317,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   log(`[miner] Datas preenchidas: ${JSON.stringify(preencheuDatas)}`);
 
   // Normaliza código do tribunal
-  const norm = (s = "") => s.toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
+  const norm = (s) => String(s || "").toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
   
   // Lista tribunais disponíveis
   const orgaosDisponiveis = await page.evaluate(() => {
@@ -390,7 +390,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     log(`[miner] Processando ${orgao}...`);
 
     // Seleciona o órgão
-    const selecionou = await page.evaluate((orgao, mapDisp) => {
+    const selecionou = await page.evaluate((orgao) => {
       const seletores = [
         'select[name*="tribunal"]', 'select[id*="tribunal"]',
         'select[name*="orgao"]', 'select[id*="orgao"]'
@@ -411,9 +411,9 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       
       if (!sel) return false;
       
-      const norm = (s = "") => s.toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
+      const normaliza = (str) => String(str || "").toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
       const alvo = Array.from(sel.options || []).find(
-        (o) => norm(o.textContent || "") === orgao.toUpperCase()
+        (o) => normaliza(o.textContent) === orgao.toUpperCase()
       );
       
       if (!alvo) return false;
@@ -421,7 +421,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       sel.value = alvo.value;
       sel.dispatchEvent(new Event("change", { bubbles: true }));
       return true;
-    }, orgao, mapDisp);
+    }, orgao);
 
     if (!selecionou) {
       log(`[miner] Não conseguiu selecionar ${orgao}`);
