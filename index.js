@@ -387,8 +387,12 @@ app.get("/debug/djen", async (req, res) => {
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
     
     log(`[djen] Navegando para ${DJEN_URL}...`);
-    await page.goto(DJEN_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    await sleep(3000);
+    await page.goto(DJEN_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+    await sleep(5000);
+    
+    // Espera algum elemento aparecer
+    await page.waitForSelector('body', { timeout: 30000 }).catch(() => {});
+    await sleep(2000);
     
     // Captura informações da página
     const pageInfo = await page.evaluate(() => {
