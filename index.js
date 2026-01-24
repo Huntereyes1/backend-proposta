@@ -118,6 +118,71 @@ const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 // Helper para esperar (substitui waitForTimeout que foi removido do Puppeteer)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper: dispara pesquisa via o que existir no DEJT (JSF/Ajax)
+async function dispararPesquisaJSF(page) {
+  return await page.evaluate(() => {
+    const tryList = [
+      () => {
+        if (typeof window.submitForm === "function") {
+          try { 
+            window.submitForm("corpo:formulario", 1, { source: "corpo:formulario:botaoAcaoPesquisar" }); 
+            return "submitForm"; 
+          } catch(e) { console.log("submitForm error:", e); }
+        }
+      },
+      () => {
+        if (window.mojarra?.ab) {
+          try { 
+            window.mojarra.ab("corpo:formulario:botaoAcaoPesquisar", null, "click", "corpo:formulario", 0); 
+            return "mojarra.ab"; 
+          } catch(e) { console.log("mojarra.ab error:", e); }
+        }
+      },
+      () => {
+        if (window.PrimeFaces?.ab) {
+          try { 
+            window.PrimeFaces.ab({ s:"corpo:formulario:botaoAcaoPesquisar", f:"corpo:formulario" }); 
+            return "PrimeFaces.ab"; 
+          } catch(e) { console.log("PrimeFaces.ab error:", e); }
+        }
+      },
+      () => {
+        if (window.A4J?.AJAX?.Submit) {
+          try { 
+            window.A4J.AJAX.Submit("corpo:formulario","corpo:formulario:botaoAcaoPesquisar",null,{"similarityGroupingId":"corpo:formulario:botaoAcaoPesquisar"}); 
+            return "A4J.AJAX.Submit"; 
+          } catch(e) { console.log("A4J error:", e); }
+        }
+      },
+      () => {
+        // Tenta executar o onclick do botão diretamente
+        const btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]');
+        if (btn) {
+          const onclick = btn.getAttribute('onclick');
+          if (onclick) {
+            try { eval(onclick); return "eval onclick"; } catch(e) {}
+          }
+          btn.click();
+          return "click";
+        }
+      },
+      () => {
+        const btn = document.querySelector('input[value="Pesquisar"]') || document.querySelector('button');
+        if (btn) { btn.click(); return "click fallback"; }
+      },
+      () => {
+        const form = document.getElementById("corpo:formulario") || document.querySelector("form");
+        if (form) { form.submit(); return "form.submit"; }
+      },
+    ];
+    for (const t of tryList) { 
+      const r = t(); 
+      if (r) return r; 
+    }
+    return "no-dispatch";
+  });
+}
+
 // ===== Debug endpoints
 app.get("/debug/env", (_req, res) => {
   res.json({
@@ -229,75 +294,57 @@ app.get("/debug/pesquisa", async (req, res) => {
     log(`[debug] Tribunal selecionado: ${selecionouTribunal}`);
     await sleep(1000);
     
-    // 4. Clica em Pesquisar usando diferentes métodos
-    log("[debug] Clicando em Pesquisar...");
+    // 4. Dispara pesquisa via JSF/Ajax
+    log("[debug] Disparando pesquisa via JSF...");
     
-    // Primeiro tenta o método normal
-    const resultadoClique = await page.evaluate(() => {
-      // Método 1: busca botão por ID
-      let btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]');
-      if (btn) {
-        btn.click();
-        return "clicou por ID";
-      }
-      
-      // Método 2: busca por value
-      btn = document.querySelector('input[value="Pesquisar"]');
-      if (btn) {
-        btn.click();
-        return "clicou por value";
-      }
-      
-      // Método 3: busca todos os inputs e buttons
-      const elementos = document.querySelectorAll('input[type="submit"], input[type="button"], button');
-      for (const el of elementos) {
-        const valor = (el.value || el.textContent || "").trim();
-        if (valor.toLowerCase() === "pesquisar") {
-          el.click();
-          return "clicou por texto: " + valor;
-        }
-      }
-      
-      // Método 4: tenta submeter o formulário diretamente
-      const form = document.querySelector('form[id*="formulario"]');
-      if (form) {
-        // Não faz submit direto pois JSF precisa de processamento especial
-        return "form encontrado mas não submetido";
-      }
-      
-      return "nenhum botão encontrado";
+    // Captura tamanho antes
+    const beforeLen = await page.evaluate(() => document.body.innerText.length);
+    log(`[debug] Body antes: ${beforeLen} chars`);
+    
+    // Verifica quais funções JSF existem
+    const jsfInfo = await page.evaluate(() => {
+      return {
+        submitForm: typeof window.submitForm === "function",
+        mojarra: !!window.mojarra?.ab,
+        PrimeFaces: !!window.PrimeFaces?.ab,
+        A4J: !!window.A4J?.AJAX?.Submit
+      };
     });
-    log(`[debug] Resultado clique: ${resultadoClique}`);
+    log(`[debug] Funções JSF disponíveis: ${JSON.stringify(jsfInfo)}`);
     
-    // Espera Ajax/navegação
-    await Promise.race([
-      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {}),
-      page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {}),
-    ]);
-    await sleep(3000);
+    // Dispara
+    const how = await dispararPesquisaJSF(page);
+    log(`[debug] Método de disparo: ${how}`);
     
-    // Se ainda não tem resultados, tenta submeter via JSF
-    let bodyLength = await page.evaluate(() => document.body.innerText.length);
-    log(`[debug] Body após primeiro clique: ${bodyLength}`);
+    // Espera Ajax + mudança real de conteúdo
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
     
-    if (bodyLength < 5000) {
-      log("[debug] Tentando submit via formulário JSF...");
-      await page.evaluate(() => {
-        // Tenta encontrar e executar a função de submit do JSF
-        const form = document.querySelector('form');
-        if (form && typeof form.submit === 'function') {
-          // Busca o botão pesquisar e simula o onclick dele
-          const btn = document.querySelector('input[value="Pesquisar"]');
-          if (btn) {
-            const onclick = btn.getAttribute('onclick');
-            if (onclick) {
-              try { eval(onclick); } catch(e) {}
-            }
-          }
-        }
-      });
-      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+    // Espera o body crescer (indica que carregou resultados)
+    await page.waitForFunction(
+      (prev) => (document.body.innerText || "").length > prev + 500,
+      { timeout: 20000 },
+      beforeLen
+    ).catch(() => {});
+    
+    await sleep(2000);
+    
+    // Verifica tamanho após
+    let afterLen = await page.evaluate(() => document.body.innerText.length);
+    log(`[debug] Body após primeiro disparo: ${afterLen} chars`);
+    
+    // Se ainda pequeno, tenta novamente
+    if (afterLen < 3000) {
+      log("[debug] Body ainda pequeno, tentando novamente...");
+      await dispararPesquisaJSF(page);
+      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 20000 }).catch(() => {});
+      await page.waitForFunction(
+        (prev) => (document.body.innerText || "").length > prev + 500,
+        { timeout: 15000 },
+        afterLen
+      ).catch(() => {});
       await sleep(2000);
+      afterLen = await page.evaluate(() => document.body.innerText.length);
+      log(`[debug] Body após segundo disparo: ${afterLen} chars`);
     }
     
     // Captura resultado
@@ -658,61 +705,37 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
     await sleep(1000);
 
-    // Clica em Pesquisar
+    // Clica em Pesquisar usando JSF/Ajax
     try {
-      log(`[miner] Clicando em Pesquisar...`);
+      log(`[miner] Disparando pesquisa via JSF...`);
       
-      const clicouPesquisar = await page.evaluate(() => {
-        // Tenta pelo ID específico do DEJT (escape de : para CSS)
-        const btnById = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]');
-        if (btnById) {
-          btnById.click();
-          return "botaoAcaoPesquisar";
-        }
-        
-        // Tenta por ID parcial
-        const allBtns = document.querySelectorAll('input[type="button"], input[type="submit"], button');
-        for (const btn of allBtns) {
-          const id = btn.id || "";
-          const name = btn.name || "";
-          const value = (btn.value || "").toLowerCase();
-          if (id.includes("Pesquisar") || name.includes("Pesquisar") || value.includes("pesquisar")) {
-            btn.click();
-            return "encontrado por id/name/value: " + (id || name || value);
-          }
-        }
-        
-        // Busca por texto
-        for (const btn of allBtns) {
-          const texto = (btn.value || btn.textContent || "").toLowerCase();
-          if (texto.includes("pesquis")) {
-            btn.click();
-            return "by text: " + texto;
-          }
-        }
-        
-        return null;
-      });
+      // Captura tamanho antes
+      const beforeLen = await page.evaluate(() => document.body.innerText.length);
       
-      log(`[miner] Clique: ${clicouPesquisar || "não encontrou botão"}`);
+      // Dispara via JSF
+      const how = await dispararPesquisaJSF(page);
+      log(`[miner] Método de disparo: ${how}`);
       
-      // Para JSF/Ajax: espera a rede ficar idle (não navegação)
+      // Espera Ajax + mudança real de conteúdo
       await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
-      await sleep(3000);
       
-      // Verifica se a página mudou (JSF pode ter atualizado via Ajax)
-      const bodyLength = await page.evaluate(() => document.body.innerText.length);
-      log(`[miner] Tamanho do body após pesquisa: ${bodyLength}`);
+      // Espera o body crescer
+      await page.waitForFunction(
+        (prev) => (document.body.innerText || "").length > prev + 500,
+        { timeout: 20000 },
+        beforeLen
+      ).catch(() => {});
       
-      // Se body ainda pequeno, tenta clicar novamente
-      if (bodyLength < 2000) {
-        log(`[miner] Body pequeno, tentando clicar novamente...`);
-        await page.evaluate(() => {
-          const btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]') ||
-                      document.querySelector('input[value*="Pesquisar" i]') ||
-                      document.querySelector('button');
-          if (btn) btn.click();
-        });
+      await sleep(2000);
+      
+      // Verifica tamanho após
+      let afterLen = await page.evaluate(() => document.body.innerText.length);
+      log(`[miner] Body: antes=${beforeLen}, depois=${afterLen}`);
+      
+      // Se ainda pequeno, tenta novamente
+      if (afterLen < 3000) {
+        log(`[miner] Body pequeno, tentando novamente...`);
+        await dispararPesquisaJSF(page);
         await page.waitForNetworkIdle({ idleTime: 2000, timeout: 20000 }).catch(() => {});
         await sleep(2000);
       }
@@ -727,8 +750,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       return {
         temAlvara: /alvar[aá]/i.test(body),
         temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
-        tamanhoBody: body.length,
-        trechoBody: body.substring(0, 500)
+        tamanhoBody: body.length
       };
     });
     log(`[miner] Resultados: alvará=${temResultados.temAlvara}, processo=${temResultados.temProcesso}, tam=${temResultados.tamanhoBody}`);
