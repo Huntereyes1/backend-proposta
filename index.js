@@ -378,6 +378,131 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// Debug: mostra estrutura HTML da área de cadernos após pesquisa
+app.get("/debug/caderno", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunais = String(req.query.tribunais || "TRT15");
+    const dataParam = req.query.data || null;
+    
+    const d = dataParam ? new Date(dataParam) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
+    
+    await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await sleep(2000);
+    
+    // Seleciona caderno e preenche datas
+    await page.evaluate((dataPt) => {
+      const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+      for (const r of radios) {
+        if (r.value === "J" || /judici/i.test(r.id || "")) {
+          r.checked = true; r.click();
+        }
+      }
+      const all = Array.from(document.querySelectorAll("input"));
+      const ini = all.find(i => /data.?ini/i.test((i.id || "") + (i.name || "")));
+      const fim = all.find(i => /data.?fim/i.test((i.id || "") + (i.name || "")));
+      if (ini) { ini.value = dataPt; ini.dispatchEvent(new Event("change", { bubbles: true })); }
+      if (fim) { fim.value = dataPt; fim.dispatchEvent(new Event("change", { bubbles: true })); }
+    }, dataPt);
+    
+    const numTribunal = tribunais.replace(/\D/g, "");
+    await page.evaluate((num) => {
+      const selects = document.querySelectorAll('select');
+      for (const sel of selects) {
+        if (sel.options && sel.options.length > 5) {
+          for (const opt of sel.options) {
+            const numOpt = (opt.textContent || "").replace(/\D/g, "");
+            if (numOpt === num) {
+              sel.value = opt.value;
+              sel.dispatchEvent(new Event("change", { bubbles: true }));
+              return;
+            }
+          }
+        }
+      }
+    }, numTribunal);
+    
+    await sleep(1000);
+    await clickPesquisarReal(page);
+    await waitJsfResult(page, 900);
+    
+    // Captura HTML e elementos clicáveis na área de resultados
+    const htmlInfo = await page.evaluate(() => {
+      // Busca TODOS os elementos clicáveis com onclick ou href
+      const clicaveis = [];
+      document.querySelectorAll("a, button, input, img, span, td, tr").forEach(el => {
+        const onclick = el.getAttribute("onclick") || "";
+        const href = el.getAttribute("href") || "";
+        if (!onclick && !href) return;
+        
+        const texto = (el.textContent || el.value || el.alt || el.title || "").trim().substring(0, 100);
+        const tag = el.tagName;
+        const id = el.id || "";
+        const classe = el.className || "";
+        
+        clicaveis.push({ 
+          tag, id, classe: classe.substring(0, 50),
+          texto: texto.substring(0, 80), 
+          href: href.substring(0, 200), 
+          onclick: onclick.substring(0, 300)
+        });
+      });
+      
+      // Filtra só os que parecem ser de download/visualização
+      const downloads = clicaveis.filter(c => 
+        /download|baixar|visualizar|abrir|window\.open/i.test(c.onclick + c.href + c.texto)
+      );
+      
+      // Pega HTML da tabela de resultados
+      let tableHtml = "";
+      document.querySelectorAll("table, div").forEach(el => {
+        if (/Edi[çc][ãa]o.*\d+.*Caderno/i.test(el.textContent || "")) {
+          if (!tableHtml || el.outerHTML.length < tableHtml.length) {
+            tableHtml = el.outerHTML;
+          }
+        }
+      });
+      
+      return {
+        totalClicaveis: clicaveis.length,
+        downloads,
+        todosClicaveis: clicaveis.slice(0, 30),
+        tableHtml: tableHtml.substring(0, 8000)
+      };
+    });
+    
+    await browser.close();
+    
+    res.json({
+      ok: true,
+      data: dataPt,
+      tribunais,
+      downloads: htmlInfo.downloads,
+      todosClicaveis: htmlInfo.todosClicaveis,
+      tableHtml: htmlInfo.tableHtml,
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // Debug: mostra o onclick do botão Pesquisar
 app.get("/debug/botao", async (req, res) => {
   try {
