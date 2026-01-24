@@ -12,6 +12,7 @@ import pLimit from "p-limit";
 import puppeteer from "puppeteer";
 import QRCode from "qrcode";
 import { fileURLToPath } from "url";
+import { execSync } from "child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -480,7 +481,6 @@ app.get("/debug/pdf", async (req, res) => {
       fs.writeFileSync(pdfPath, pdfBuffer);
       
       try {
-        const { execSync } = require('child_process');
         const textoPath = pdfPath.replace('.pdf', '.txt');
         
         execSync(`pdftotext -layout "${pdfPath}" "${textoPath}"`, { timeout: 120000 });
