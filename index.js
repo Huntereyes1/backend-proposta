@@ -439,57 +439,110 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
     // Clica em Pesquisar
     try {
-      await Promise.race([
-        page.evaluate(() => {
-          // Busca botão de pesquisar
-          const btns = document.querySelectorAll('input[type="submit"], button, input[type="button"]');
-          for (const btn of btns) {
-            const texto = (btn.value || btn.textContent || "").toLowerCase();
-            if (texto.includes("pesquis")) {
-              btn.click();
-              return true;
-            }
-          }
-          // Fallback: primeiro submit
-          const submit = document.querySelector('input[type="submit"]');
-          if (submit) { submit.click(); return true; }
-          return false;
-        }),
-        sleep(2000)
-      ]);
+      log(`[miner] Clicando em Pesquisar...`);
       
-      await page.waitForNetworkIdle({ idleTime: 1500, timeout: 30000 }).catch(() => {});
-      await sleep(2000);
+      const clicouPesquisar = await page.evaluate(() => {
+        // Tenta pelo ID específico do DEJT
+        const btnById = document.querySelector('#corpo\\:formulario\\:botaoAcaoPesquisar');
+        if (btnById) {
+          btnById.click();
+          return "botaoAcaoPesquisar";
+        }
+        
+        // Tenta por name
+        const btnByName = document.querySelector('[name*="botaoAcaoPesquisar"]');
+        if (btnByName) {
+          btnByName.click();
+          return "by name";
+        }
+        
+        // Busca botão com texto "Pesquisar"
+        const btns = document.querySelectorAll('input[type="submit"], button, input[type="button"]');
+        for (const btn of btns) {
+          const texto = (btn.value || btn.textContent || "").toLowerCase();
+          if (texto.includes("pesquis")) {
+            btn.click();
+            return "by text: " + texto;
+          }
+        }
+        
+        // Último fallback: primeiro submit
+        const submit = document.querySelector('input[type="submit"]');
+        if (submit) { 
+          submit.click(); 
+          return "fallback submit";
+        }
+        
+        return null;
+      });
+      
+      log(`[miner] Clique: ${clicouPesquisar || "não encontrou botão"}`);
+      
+      // Espera a página carregar os resultados
+      await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {});
+      await sleep(3000);
       
     } catch (e) {
       log(`[miner] Erro ao pesquisar: ${e.message}`);
     }
 
+    // Verifica se há conteúdo na página após pesquisa
+    const temResultados = await page.evaluate(() => {
+      const body = document.body.innerText || "";
+      return {
+        temAlvara: /alvar[aá]/i.test(body),
+        temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
+        tamanhoBody: body.length
+      };
+    });
+    log(`[miner] Resultados na página: ${JSON.stringify(temResultados)}`);
+
     // Coleta links de atos (Visualizar, Inteiro Teor, etc)
     const linksAtos = await page.evaluate(() => {
       const links = new Set();
+      const body = document.body.innerText || "";
       
-      // Busca links com texto relevante
+      // Debug: verifica se há conteúdo relevante
+      console.log("Body length:", body.length);
+      console.log("Tem alvará:", /alvar[aá]/i.test(body));
+      
+      // Busca todos os links
       document.querySelectorAll("a").forEach((a) => {
-        const texto = (a.textContent || "").toLowerCase();
-        const href = a.href || "";
-        if ((texto.includes("visualizar") || texto.includes("inteiro teor") || 
-             texto.includes("conteúdo") || texto.includes("exibir") || texto.includes("abrir")) &&
-            href && !href.startsWith("javascript:void")) {
+        const texto = (a.textContent || "").toLowerCase().trim();
+        const href = a.href || a.getAttribute("href") || "";
+        
+        // Links com texto relevante
+        if (texto.includes("visualizar") || texto.includes("inteiro teor") || 
+            texto.includes("conteúdo") || texto.includes("conteudo") ||
+            texto.includes("exibir") || texto.includes("abrir") ||
+            texto.includes("ver") || texto.includes("documento")) {
+          if (href && !href.startsWith("javascript:void")) {
+            links.add(href.startsWith("http") ? href : (href.startsWith("/") ? "https://dejt.jt.jus.br" + href : href));
+          }
+        }
+        
+        // Links do domínio DEJT
+        if (href.includes("dejt.jt.jus.br") && !href.includes("diariocon")) {
           links.add(href);
         }
       });
       
-      // Busca links do próprio domínio DEJT
-      document.querySelectorAll('a[href*="dejt.jt.jus.br"]').forEach((a) => {
-        if (a.href) links.add(a.href);
-      });
-      
-      // Busca onclick com URLs
+      // Busca onclick com window.open
       document.querySelectorAll("[onclick]").forEach((el) => {
         const onclick = el.getAttribute("onclick") || "";
         const match = onclick.match(/window\.open\(['"]([^'"]+)['"]/);
-        if (match) links.add(match[1]);
+        if (match) {
+          const url = match[1];
+          links.add(url.startsWith("http") ? url : "https://dejt.jt.jus.br" + url);
+        }
+      });
+      
+      // Busca hrefs em células de tabela (padrão comum no DEJT)
+      document.querySelectorAll("td a[href]").forEach((a) => {
+        const href = a.href || a.getAttribute("href") || "";
+        if (href && !href.startsWith("javascript:void") && !href.includes("diariocon")) {
+          links.add(href.startsWith("http") ? href : "https://dejt.jt.jus.br" + href);
+        }
       });
       
       return Array.from(links).slice(0, 100);
