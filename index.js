@@ -13,6 +13,7 @@ import puppeteer from "puppeteer";
 import QRCode from "qrcode";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
+import pdf from "pdf-parse";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -477,15 +478,11 @@ app.get("/debug/pdf", async (req, res) => {
     if (pdfBuffer && pdfBuffer.length > 1000) {
       log(`[pdf] Processando PDF de ${pdfBuffer.length} bytes...`);
       
-      const pdfPath = `/tmp/caderno_${Date.now()}.pdf`;
-      fs.writeFileSync(pdfPath, pdfBuffer);
-      
       try {
-        const textoPath = pdfPath.replace('.pdf', '.txt');
-        
-        execSync(`pdftotext -layout "${pdfPath}" "${textoPath}"`, { timeout: 120000 });
-        const texto = fs.readFileSync(textoPath, 'utf-8');
-        log(`[pdf] Texto extraído: ${texto.length} chars`);
+        // Usa pdf-parse para extrair texto
+        const pdfData = await pdf(pdfBuffer);
+        const texto = pdfData.text || '';
+        log(`[pdf] Texto extraído: ${texto.length} chars, ${pdfData.numpages} páginas`);
         
         // Busca alvarás
         const alvaras = [];
@@ -504,6 +501,7 @@ app.get("/debug/pdf", async (req, res) => {
         resultado = {
           pdfCapturado: true,
           pdfBytes: pdfBuffer.length,
+          pdfPaginas: pdfData.numpages,
           textoChars: texto.length,
           alvarasEncontrados: alvaras.length,
           alvaras: alvaras.slice(0, 5),
@@ -512,9 +510,6 @@ app.get("/debug/pdf", async (req, res) => {
           valores: [...new Set(valores)].slice(0, 15),
           trechoTexto: texto.substring(0, 2000)
         };
-        
-        fs.unlinkSync(pdfPath);
-        fs.unlinkSync(textoPath);
         
       } catch (e) {
         log(`[pdf] Erro pdftotext: ${e.message}`);
