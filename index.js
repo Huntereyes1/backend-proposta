@@ -385,23 +385,11 @@ app.get("/debug/pdf", async (req, res) => {
     
     const page = await browser.newPage();
     
-    // Configura para capturar o PDF
-    let pdfBuffer = null;
-    let pdfUrl = null;
-    
-    // Intercepta a resposta PDF
-    page.on('response', async (response) => {
-      const contentType = response.headers()['content-type'] || '';
-      if (contentType.includes('application/pdf')) {
-        pdfUrl = response.url();
-        log(`[pdf] PDF detectado: ${pdfUrl.substring(0, 100)}`);
-        try {
-          pdfBuffer = await response.buffer();
-          log(`[pdf] PDF capturado: ${pdfBuffer.length} bytes`);
-        } catch (e) {
-          log(`[pdf] Erro ao capturar buffer: ${e.message}`);
-        }
-      }
+    // Configura para aceitar downloads
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: '/tmp'
     });
     
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
@@ -445,92 +433,115 @@ app.get("/debug/pdf", async (req, res) => {
     await clickPesquisarReal(page);
     await waitJsfResult(page, 900);
     
-    // Clica no download
-    log(`[pdf] Clicando no download...`);
-    await page.click('a.link-download').catch(() => {});
+    // Pega os cookies da sessão
+    const cookies = await page.cookies();
+    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    log(`[pdf] Cookies capturados: ${cookies.length}`);
     
-    // Espera o PDF ser baixado
-    await sleep(5000);
-    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+    // Pega o ViewState do formulário (necessário para JSF)
+    const formData = await page.evaluate(() => {
+      const form = document.getElementById('corpo:formulario');
+      if (!form) return null;
+      
+      const data = {};
+      const inputs = form.querySelectorAll('input[type="hidden"]');
+      inputs.forEach(inp => {
+        if (inp.name) data[inp.name] = inp.value || '';
+      });
+      
+      // Adiciona o source do botão de download
+      data['corpo:formulario'] = 'corpo:formulario';
+      data['corpo:formulario:plcLogicaItens:0:j_id132'] = 'corpo:formulario:plcLogicaItens:0:j_id132';
+      
+      return data;
+    });
+    
+    log(`[pdf] FormData capturado: ${formData ? Object.keys(formData).length + ' campos' : 'null'}`);
+    
+    // Faz o POST para baixar o PDF
+    const currentUrl = page.url();
+    log(`[pdf] Fazendo POST para: ${currentUrl}`);
+    
+    const formBody = new URLSearchParams();
+    if (formData) {
+      for (const [key, value] of Object.entries(formData)) {
+        formBody.append(key, value);
+      }
+    }
+    
+    const pdfResponse = await fetch(currentUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Cookie': cookieString,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      body: formBody.toString()
+    });
+    
+    log(`[pdf] Resposta: ${pdfResponse.status} ${pdfResponse.headers.get('content-type')}`);
     
     let resultado = { pdfCapturado: false };
     
-    if (pdfBuffer) {
-      log(`[pdf] Extraindo texto do PDF...`);
+    if (pdfResponse.headers.get('content-type')?.includes('pdf')) {
+      const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+      log(`[pdf] PDF baixado: ${pdfBuffer.length} bytes`);
       
-      // Salva o PDF temporariamente
+      // Salva o PDF
       const pdfPath = `/tmp/caderno_${Date.now()}.pdf`;
       fs.writeFileSync(pdfPath, pdfBuffer);
-      log(`[pdf] PDF salvo em ${pdfPath}`);
       
-      // Tenta extrair texto usando pdftotext (se disponível) ou pdf-parse
+      // Extrai texto
       try {
-        // Primeiro tenta com pdftotext (mais rápido e preciso)
         const { execSync } = require('child_process');
         const textoPath = pdfPath.replace('.pdf', '.txt');
         
-        try {
-          execSync(`pdftotext -layout "${pdfPath}" "${textoPath}"`, { timeout: 60000 });
-          const texto = fs.readFileSync(textoPath, 'utf-8');
-          log(`[pdf] Texto extraído via pdftotext: ${texto.length} chars`);
-          
-          // Busca alvarás no texto
-          const alvaras = [];
-          const linhas = texto.split('\n');
-          for (let i = 0; i < linhas.length; i++) {
-            const linha = linhas[i];
-            if (/alvar[aá]|levantamento|libera[cç][aã]o/i.test(linha)) {
-              // Pega contexto (5 linhas antes e depois)
-              const inicio = Math.max(0, i - 5);
-              const fim = Math.min(linhas.length, i + 10);
-              const contexto = linhas.slice(inicio, fim).join('\n');
-              alvaras.push({ linha: i, contexto: contexto.substring(0, 1000) });
-            }
+        execSync(`pdftotext -layout "${pdfPath}" "${textoPath}"`, { timeout: 120000 });
+        const texto = fs.readFileSync(textoPath, 'utf-8');
+        log(`[pdf] Texto extraído: ${texto.length} chars`);
+        
+        // Busca alvarás
+        const alvaras = [];
+        const linhas = texto.split('\n');
+        for (let i = 0; i < linhas.length; i++) {
+          if (/alvar[aá]|levantamento|libera[cç][aã]o/i.test(linhas[i])) {
+            const inicio = Math.max(0, i - 3);
+            const fim = Math.min(linhas.length, i + 8);
+            alvaras.push({ linha: i, contexto: linhas.slice(inicio, fim).join('\n').substring(0, 800) });
           }
-          
-          // Busca processos
-          const processos = texto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/g) || [];
-          
-          // Busca valores em reais
-          const valores = texto.match(/R\$\s*[\d.,]+/g) || [];
-          
-          resultado = {
-            pdfCapturado: true,
-            pdfBytes: pdfBuffer.length,
-            textoChars: texto.length,
-            alvarasEncontrados: alvaras.length,
-            alvaras: alvaras.slice(0, 10),
-            processosUnicos: [...new Set(processos)].length,
-            processos: [...new Set(processos)].slice(0, 20),
-            valores: valores.slice(0, 20),
-            trechoTexto: texto.substring(0, 3000)
-          };
-          
-          // Limpa arquivos temporários
-          fs.unlinkSync(pdfPath);
-          fs.unlinkSync(textoPath);
-          
-        } catch (e) {
-          log(`[pdf] pdftotext não disponível, tentando alternativa: ${e.message}`);
-          resultado = { pdfCapturado: true, pdfBytes: pdfBuffer.length, erro: 'pdftotext não disponível' };
         }
         
+        const processos = [...new Set(texto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/g) || [])];
+        const valores = texto.match(/R\$\s*[\d.,]+/g) || [];
+        
+        resultado = {
+          pdfCapturado: true,
+          pdfBytes: pdfBuffer.length,
+          textoChars: texto.length,
+          alvarasEncontrados: alvaras.length,
+          alvaras: alvaras.slice(0, 5),
+          processosUnicos: processos.length,
+          processos: processos.slice(0, 10),
+          valores: [...new Set(valores)].slice(0, 15),
+          trechoTexto: texto.substring(0, 2000)
+        };
+        
+        fs.unlinkSync(pdfPath);
+        fs.unlinkSync(textoPath);
+        
       } catch (e) {
-        log(`[pdf] Erro ao extrair texto: ${e.message}`);
+        log(`[pdf] Erro pdftotext: ${e.message}`);
         resultado = { pdfCapturado: true, pdfBytes: pdfBuffer.length, erro: e.message };
       }
+    } else {
+      log(`[pdf] Resposta não é PDF`);
+      const body = await pdfResponse.text();
+      resultado = { pdfCapturado: false, responseBody: body.substring(0, 500) };
     }
     
     await browser.close();
     
-    res.json({
-      ok: true,
-      data: dataPt,
-      tribunais,
-      pdfUrl,
-      resultado,
-      logs
-    });
+    res.json({ ok: true, data: dataPt, tribunais, resultado, logs });
     
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e), logs });
