@@ -496,7 +496,7 @@ app.get("/debug/download", async (req, res) => {
       // Verifica se a página atual mudou
       const currentUrl = page.url();
       const currentBody = await page.evaluate(() => document.body.innerText.length);
-      log(`[download] Página atual: ${currentUrl}, body: ${currentBody}`);
+      log(`[download] Página atual: https://dejt.jt.jus.br/dejt/f/n/diariocon, body: ${currentBody}`);
     }
     
     await browser.close();
