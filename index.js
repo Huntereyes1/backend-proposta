@@ -118,75 +118,75 @@ const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 // Helper para esperar (substitui waitForTimeout que foi removido do Puppeteer)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Helper: dispara pesquisa via JSF/Ajax com detecção dinâmica de ID
+// Helper: dispara pesquisa via JSF/Ajax - PRIORIZA onclick do botão
 async function dispararPesquisaJSF(page) {
   return await page.evaluate(() => {
-    // Acha o botão "Pesquisar" de forma robusta
+    // Encontra o botão Pesquisar de forma robusta
     const btn =
       document.getElementById("corpo:formulario:botaoAcaoPesquisar") ||
       Array.from(document.querySelectorAll('input[type="submit"],input[type="button"],button'))
         .find(b => /pesquis/i.test((b.value || b.textContent || "")));
-    
+
     const form = document.getElementById("corpo:formulario") || btn?.form || document.querySelector("form");
     const bid = btn?.id || null;
     const fid = form?.id || null;
 
-    // Tenta A4J primeiro (que está disponível no DEJT)
-    try {
-      if (bid && fid && window.A4J?.AJAX?.Submit) {
-        window.A4J.AJAX.Submit(fid, bid, null, { similarityGroupingId: bid });
-        return "A4J.AJAX.Submit(" + bid + ")";
-      }
-    } catch(e) { console.log("A4J error:", e); }
-
-    // Tenta mojarra.ab
-    try {
-      if (bid && window.mojarra?.ab) {
-        window.mojarra.ab(bid, null, "click", fid, 0);
-        return "mojarra.ab(" + bid + ")";
-      }
-    } catch(e) { console.log("mojarra error:", e); }
-
-    // Tenta PrimeFaces.ab
-    try {
-      if (bid && window.PrimeFaces?.ab) {
-        window.PrimeFaces.ab({ s: bid, f: fid });
-        return "PrimeFaces.ab(" + bid + ")";
-      }
-    } catch(e) { console.log("PrimeFaces error:", e); }
-
-    // Tenta submitForm
-    try {
-      if (fid && typeof window.submitForm === "function") {
-        window.submitForm(fid, 1, { source: bid || "corpo:formulario:botaoAcaoPesquisar" });
-        return "submitForm(" + fid + ")";
-      }
-    } catch(e) { console.log("submitForm error:", e); }
-
-    // Fallback: dispara onclick real do botão
+    // 1) PRIORITÁRIO: executar exatamente o onclick gerado pelo JSF
     if (btn) {
-      // Tenta executar o onclick diretamente
-      const onclickAttr = btn.getAttribute("onclick");
-      if (onclickAttr) {
+      const onclick = btn.getAttribute("onclick");
+      if (onclick) {
         try { 
-          eval(onclickAttr); 
-          return "eval onclick(" + (bid || "no-id") + ")";
-        } catch(e) {}
+          eval(onclick); 
+          return "eval onclick(" + (bid || "no-id") + ")"; 
+        } catch(e) {
+          console.log("eval onclick error:", e);
+        }
       }
-      
-      // MouseEvent
+    }
+
+    // 2) Se não houver onclick, tenta A4J → mojarra → PrimeFaces → submitForm
+    try { 
+      if (bid && fid && window.A4J?.AJAX?.Submit) { 
+        window.A4J.AJAX.Submit(fid, bid, null, { similarityGroupingId: bid }); 
+        return "A4J.AJAX.Submit(" + bid + ")"; 
+      } 
+    } catch(e) {}
+    
+    try { 
+      if (bid && window.mojarra?.ab) { 
+        window.mojarra.ab(bid, null, "click", fid, 0); 
+        return "mojarra.ab(" + bid + ")"; 
+      } 
+    } catch(e) {}
+    
+    try { 
+      if (bid && window.PrimeFaces?.ab) { 
+        window.PrimeFaces.ab({ s: bid, f: fid }); 
+        return "PrimeFaces.ab(" + bid + ")"; 
+      } 
+    } catch(e) {}
+    
+    try { 
+      if (fid && typeof window.submitForm === "function") { 
+        window.submitForm(fid, 1, { source: bid || "corpo:formulario:botaoAcaoPesquisar" }); 
+        return "submitForm(" + fid + ")"; 
+      } 
+    } catch(e) {}
+
+    // 3) Fallback: click nativo
+    if (btn) {
       const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
       btn.dispatchEvent(ev);
       if (typeof btn.click === "function") btn.click();
       return "click(" + (bid || "no-id") + ")";
     }
 
-    // Último recurso: submit do form
-    if (form) {
-      form.submit();
-      return "form.submit";
+    // 4) Último recurso
+    if (form) { 
+      form.submit(); 
+      return "form.submit"; 
     }
-
+    
     return "no-dispatch";
   });
 }
