@@ -385,11 +385,30 @@ app.get("/debug/pdf", async (req, res) => {
     
     const page = await browser.newPage();
     
-    // Configura para aceitar downloads
+    // Usa CDP para interceptar requisições
     const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: '/tmp'
+    await client.send('Fetch.enable', {
+      patterns: [{ requestStage: 'Response', resourceType: 'Document' }]
+    });
+    
+    let pdfBuffer = null;
+    
+    client.on('Fetch.requestPaused', async (event) => {
+      const { requestId, responseHeaders } = event;
+      const contentType = responseHeaders?.find(h => h.name.toLowerCase() === 'content-type')?.value || '';
+      
+      if (contentType.includes('application/pdf')) {
+        log(`[pdf] PDF interceptado via CDP!`);
+        try {
+          const response = await client.send('Fetch.getResponseBody', { requestId });
+          pdfBuffer = Buffer.from(response.body, response.base64Encoded ? 'base64' : 'utf-8');
+          log(`[pdf] PDF capturado: ${pdfBuffer.length} bytes`);
+        } catch (e) {
+          log(`[pdf] Erro ao capturar body: ${e.message}`);
+        }
+      }
+      
+      await client.send('Fetch.continueRequest', { requestId }).catch(() => {});
     });
     
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
@@ -433,65 +452,33 @@ app.get("/debug/pdf", async (req, res) => {
     await clickPesquisarReal(page);
     await waitJsfResult(page, 900);
     
-    // Pega os cookies da sessão
-    const cookies = await page.cookies();
-    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-    log(`[pdf] Cookies capturados: ${cookies.length}`);
+    // Clica no download
+    log(`[pdf] Clicando no download...`);
     
-    // Pega o ViewState do formulário (necessário para JSF)
-    const formData = await page.evaluate(() => {
-      const form = document.getElementById('corpo:formulario');
-      if (!form) return null;
-      
-      const data = {};
-      const inputs = form.querySelectorAll('input[type="hidden"]');
-      inputs.forEach(inp => {
-        if (inp.name) data[inp.name] = inp.value || '';
-      });
-      
-      // Adiciona o source do botão de download
-      data['corpo:formulario'] = 'corpo:formulario';
-      data['corpo:formulario:plcLogicaItens:0:j_id132'] = 'corpo:formulario:plcLogicaItens:0:j_id132';
-      
-      return data;
-    });
-    
-    log(`[pdf] FormData capturado: ${formData ? Object.keys(formData).length + ' campos' : 'null'}`);
-    
-    // Faz o POST para baixar o PDF
-    const currentUrl = page.url();
-    log(`[pdf] Fazendo POST para: ${currentUrl}`);
-    
-    const formBody = new URLSearchParams();
-    if (formData) {
-      for (const [key, value] of Object.entries(formData)) {
-        formBody.append(key, value);
+    // Executa o onclick do link de download
+    await page.evaluate(() => {
+      const link = document.querySelector('a.link-download');
+      if (link) {
+        const onclick = link.getAttribute('onclick') || '';
+        const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, '');
+        if (cleaned) {
+          try { eval(cleaned); } catch(e) { console.log(e); }
+        }
       }
-    }
-    
-    const pdfResponse = await fetch(currentUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Cookie': cookieString,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      body: formBody.toString()
     });
     
-    log(`[pdf] Resposta: ${pdfResponse.status} ${pdfResponse.headers.get('content-type')}`);
+    // Espera o PDF ser interceptado
+    await sleep(8000);
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
     
     let resultado = { pdfCapturado: false };
     
-    if (pdfResponse.headers.get('content-type')?.includes('pdf')) {
-      const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
-      log(`[pdf] PDF baixado: ${pdfBuffer.length} bytes`);
+    if (pdfBuffer && pdfBuffer.length > 1000) {
+      log(`[pdf] Processando PDF de ${pdfBuffer.length} bytes...`);
       
-      // Salva o PDF
       const pdfPath = `/tmp/caderno_${Date.now()}.pdf`;
       fs.writeFileSync(pdfPath, pdfBuffer);
       
-      // Extrai texto
       try {
         const { execSync } = require('child_process');
         const textoPath = pdfPath.replace('.pdf', '.txt');
@@ -534,9 +521,7 @@ app.get("/debug/pdf", async (req, res) => {
         resultado = { pdfCapturado: true, pdfBytes: pdfBuffer.length, erro: e.message };
       }
     } else {
-      log(`[pdf] Resposta não é PDF`);
-      const body = await pdfResponse.text();
-      resultado = { pdfCapturado: false, responseBody: body.substring(0, 500) };
+      log(`[pdf] PDF não capturado ou muito pequeno`);
     }
     
     await browser.close();
