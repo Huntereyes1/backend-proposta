@@ -1,5 +1,5 @@
-// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.4, DEJT real + probe)
-// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last, /debug/probe
+// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.5, DEJT real + probes)
+// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last, /debug/probe, /debug/probe-links
 
 import express from "express";
 import cors from "cors";
@@ -13,7 +13,6 @@ import puppeteer from "puppeteer";
 import QRCode from "qrcode";
 import { fileURLToPath } from "url";
 
-// ===== Paths / Boot =====
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -28,7 +27,7 @@ const TEMPLATE_PATH = path.join(__dirname, "template.html");
 const MIN_TICKET_CENTS = Number(process.env.MIN_TICKET_CENTS || 2_000_000); // 20k
 const CONCURRENCY = Number(process.env.CONCURRENCY || 3);
 const SCAN_TRIBUNAIS = String(process.env.SCAN_TRIBUNAIS || "TRT15");
-const DEMO = false; // SEMPRE DESLIGADO
+const DEMO = false; // sempre OFF
 
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 if (!fs.existsSync(EXPORTS_DIR)) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
@@ -39,7 +38,6 @@ app.use(morgan("tiny"));
 
 let lastPdfFile = null;
 
-// Servir PDFs e exports
 app.use(
   "/pdf",
   express.static(PDF_DIR, {
@@ -58,15 +56,13 @@ app.use(
 );
 
 app.get("/", (_req, res) =>
-  res.send(
-    "Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.4 — DEJT real + probe"
-  )
+  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.5 — DEJT real + probes")
 );
 app.get("/health", (_req, res) =>
   res.json({ ok: true, now: new Date().toISOString() })
 );
 
-// ===== /debug/probe — executa até após "Pesquisar" e devolve HTML (recorte) + opções do select
+/** ===================== /debug/probe (HTML) ===================== */
 app.get("/debug/probe", async (req, res) => {
   try {
     const data = String(req.query.data || "");
@@ -84,12 +80,10 @@ app.get("/debug/probe", async (req, res) => {
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     });
     const page = await browser.newPage();
-    await page.goto(
-      "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y",
-      { waitUntil: "domcontentloaded" }
-    );
+    await page.goto("https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y", {
+      waitUntil: "domcontentloaded",
+    });
 
-    // datas
     await page.evaluate((dataPt) => {
       const ini = document.querySelector('input[name="dataIni"], #dataIni');
       const fim = document.querySelector('input[name="dataFim"], #dataFim');
@@ -97,12 +91,10 @@ app.get("/debug/probe", async (req, res) => {
       if (fim) fim.value = dataPt;
     }, dataPt);
 
-    // opções do select
     const opts = await page.evaluate(() => {
       const sel =
-        document.querySelector(
-          'select[name="tribunal"], #orgaos, #tribunal, select[name="orgao"]'
-        ) || null;
+        document.querySelector('select[name="tribunal"], #orgaos, #tribunal, select[name="orgao"]') ||
+        null;
       if (!sel) return [];
       return Array.from(sel.options || []).map((o) => ({
         value: o.value,
@@ -110,15 +102,13 @@ app.get("/debug/probe", async (req, res) => {
       }));
     });
 
-    // escolhe primeiro órgão dos pedidos (ou TRT15)
     const alvoCode = String(tribunais).split(",")[0] || "TRT15";
     await page.evaluate((alvoCode) => {
       const norm = (s = "") =>
         s.toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1");
       const sel =
-        document.querySelector(
-          'select[name="tribunal"], #orgaos, #tribunal, select[name="orgao"]'
-        ) || null;
+        document.querySelector('select[name="tribunal"], #orgaos, #tribunal, select[name="orgao"]') ||
+        null;
       if (!sel) return false;
       const opt = Array.from(sel.options || []).find(
         (o) => norm(o.textContent || "") === alvoCode.toUpperCase()
@@ -129,12 +119,9 @@ app.get("/debug/probe", async (req, res) => {
       return true;
     }, alvoCode);
 
-    // clica pesquisar
     try {
       await Promise.all([
-        page.click(
-          'input[type="submit"][value="Pesquisar"], #btnPesquisar, button'
-        ),
+        page.click('input[type="submit"][value="Pesquisar"], #btnPesquisar, button'),
         page.waitForNetworkIdle({ idleTime: 800, timeout: 30000 }),
       ]);
     } catch {}
@@ -145,21 +132,119 @@ app.get("/debug/probe", async (req, res) => {
     res.json({
       ok: true,
       orgaos: opts,
-      sample: html.slice(0, 120000), // 120k chars p/ inspecionar
+      sample: html.slice(0, 120000),
       len: html.length,
-      note:
-        "Procure por 'Visualizar', 'Inteiro Teor', 'Conteúdo', 'Exibir', 'Abrir'.",
+      note: "Procure por 'Visualizar', 'Inteiro Teor', 'Conteúdo', 'Exibir', 'Abrir'.",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// ===== Utils =====
+/** ===================== /debug/probe-links (dump text/url/onclick) ===================== */
+app.get("/debug/probe-links", async (req, res) => {
+  try {
+    const data = String(req.query.data || "");
+    const tribunais = String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15");
+
+    const d = data ? new Date(data) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    const page = await browser.newPage();
+    await page.goto("https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y", {
+      waitUntil: "domcontentloaded",
+    });
+
+    await page.evaluate((dataPt) => {
+      const ini = document.querySelector('input[name="dataIni"], #dataIni');
+      const fim = document.querySelector('input[name="dataFim"], #dataFim');
+      if (ini) ini.value = dataPt;
+      if (fim) fim.value = dataPt;
+    }, dataPt);
+
+    const alvoCode = String(tribunais).split(",")[0] || "TRT15";
+    await page.evaluate((alvoCode) => {
+      const norm = (s = "") =>
+        s.toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1");
+      const sel =
+        document.querySelector('select[name="tribunal"], #orgaos, #tribunal, select[name="orgao"]') ||
+        null;
+      if (!sel) return false;
+      const opt = Array.from(sel.options || []).find(
+        (o) => norm(o.textContent || "") === alvoCode.toUpperCase()
+      );
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change"));
+      return true;
+    }, alvoCode);
+
+    try {
+      await Promise.all([
+        page.click('input[type="submit"][value="Pesquisar"], #btnPesquisar, button'),
+        page.waitForNetworkIdle({ idleTime: 800, timeout: 30000 }),
+      ]);
+    } catch {}
+
+    const dumpFrom = async (frame) =>
+      frame.evaluate(() => {
+        const rows = [];
+        const resolveRel = (u) => {
+          try {
+            return new URL(u, location.href).href;
+          } catch {
+            return u || null;
+          }
+        };
+        document
+          .querySelectorAll("a,button,input[type=button],input[type=submit]")
+          .forEach((el) => {
+            const text = (el.textContent || el.value || "").trim();
+            const onclick = el.getAttribute?.("onclick") || "";
+            const hrefAttr = el.getAttribute?.("href") || "";
+            let url = el.href || "";
+            if (!url && hrefAttr) url = resolveRel(hrefAttr);
+            const m1 =
+              onclick.match(/'(https?:[^']+)'/) || onclick.match(/"(https?:[^"]+)"/);
+            const m2 = onclick.match(/window\.open\(['"]([^'"]+)['"]/i);
+            if (!url && m1 && m1[1]) url = m1[1];
+            if (!url && m2 && m2[1]) url = resolveRel(m2[1]);
+            if (text || url || onclick) rows.push({ text, url: url || null, onclick: onclick || null });
+          });
+        return rows.slice(0, 300);
+      });
+
+    let rows = [];
+    try {
+      rows = await dumpFrom(page);
+    } catch {}
+    if (!rows.length) {
+      for (const fr of page.frames()) {
+        try {
+          rows = await dumpFrom(fr);
+          if (rows.length) break;
+        } catch {}
+      }
+    }
+
+    await browser.close();
+    res.json({ ok: true, count: rows.length, rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+/** ===================== Utils ===================== */
 const toNumber = (v) =>
-  typeof v === "number"
-    ? v
-    : Number(String(v ?? "").replace(/\./g, "").replace(",", "."));
+  typeof v === "number" ? v : Number(String(v ?? "").replace(/\./g, "").replace(",", "."));
 
 const centavosToBRL = (c) =>
   (Math.round(c) / 100).toLocaleString("pt-BR", {
@@ -186,7 +271,6 @@ function parseDataPtBRorISO(s) {
 
 async function renderFromTemplate(vars) {
   let html = await fsp.readFile(TEMPLATE_PATH, "utf8");
-  // QRCode
   let qrcodeDataUrl = "";
   const link = (vars.id_ato || vars.link_oficial || "").toString().trim();
   if (link) {
@@ -205,14 +289,11 @@ function makeWaLink(text) {
   return "https://wa.me/?text=" + encodeURIComponent(text);
 }
 function makeEmailLink(subject, body) {
-  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(
-    body
-  )}`;
+  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
-// ===== Heurísticas e RegEx para DEJT =====
-const DEJT_URL =
-  "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y";
+/** ===================== Miner (DEJT) ===================== */
+const DEJT_URL = "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y";
 const RX_PROC = /\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/g;
 const RX_MOEDA = /R\$\s*([\d\.]+,\d{2})/g;
 const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
@@ -220,13 +301,7 @@ const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 function _parecePF(nome) {
   if (!nome) return false;
   const s = nome.toUpperCase();
-  if (
-    s.includes(" LTDA") ||
-    s.includes(" S.A") ||
-    s.includes(" S/A") ||
-    s.includes(" EPP") ||
-    s.includes(" MEI ")
-  )
+  if (s.includes(" LTDA") || s.includes(" S.A") || s.includes(" S/A") || s.includes(" EPP") || s.includes(" MEI "))
     return false;
   return s.trim().split(/\s+/).length >= 2;
 }
@@ -250,11 +325,9 @@ function pickProvavelPF(texto) {
   return "";
 }
 
-// ===== Miner real (DEJT) — retorna itens já no formato do /scan
 async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   if (DEMO) return [];
 
-  // datas
   const d = data ? new Date(data) : new Date();
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -273,38 +346,27 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   page.setDefaultNavigationTimeout(45000);
   page.setDefaultTimeout(45000);
 
-  // 1) abre DEJT "Diários > Judiciário"
   await page.goto(DEJT_URL, { waitUntil: "domcontentloaded" });
 
-  // 2) Preenche datas
   await page.evaluate((dataPt) => {
-    const ini =
-      document.querySelector('input[name="dataIni"], input#dataIni') || null;
-    const fim =
-      document.querySelector('input[name="dataFim"], input#dataFim') || null;
+    const ini = document.querySelector('input[name="dataIni"], input#dataIni');
+    const fim = document.querySelector('input[name="dataFim"], input#dataFim');
     if (ini) {
       ini.value = "";
       ini.dispatchEvent(new Event("input"));
-    }
-    if (fim) {
-      fim.value = "";
-      fim.dispatchEvent(new Event("input"));
-    }
-    if (ini) {
       ini.value = dataPt;
       ini.dispatchEvent(new Event("change"));
     }
     if (fim) {
+      fim.value = "";
+      fim.dispatchEvent(new Event("input"));
       fim.value = dataPt;
       fim.dispatchEvent(new Event("change"));
     }
   }, dataPt);
 
-  // ===== 2.1 Monta lista de órgãos =====
-  // Suporta: "TRT15,TRT2", "ALL", "*", "TRT*"
   const tribunaisRaw = String(tribunais || SCAN_TRIBUNAIS || "TRT15").trim();
 
-  // Descobre o select e todas as opções disponíveis na página
   const orgaosDisponiveis = await page.evaluate(() => {
     const sel =
       document.querySelector(
@@ -317,15 +379,10 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     }));
   });
 
-  // Normalizador: "TRT 15ª Região" -> "TRT15"
   const norm = (s = "") =>
-    s
-      .toUpperCase()
-      .replace(/\s+/g, " ")
-      .replace(/TRT\s*(\d+).*/i, "TRT$1")
-      .trim();
+    s.toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
 
-  const mapDisponiveis = orgaosDisponiveis.map((o) => ({
+  const mapDisp = orgaosDisponiveis.map((o) => ({
     value: o.value,
     code: norm(o.label),
     label: o.label,
@@ -333,24 +390,67 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
   let lista;
   if (/^(ALL|\*|TRT\*)$/i.test(tribunaisRaw)) {
-    // TODOS os TRT listados no select
-    lista = mapDisponiveis
-      .filter((o) => /^TRT\d+$/i.test(o.code))
-      .map((o) => o.code);
+    lista = mapDisp.filter((o) => /^TRT\d+$/i.test(o.code)).map((o) => o.code);
   } else {
-    // Lista explícita separada por vírgula
     const pedidos = tribunaisRaw.split(/\s*,\s*/).filter(Boolean).map(norm);
-    const setDisponiveis = new Set(mapDisponiveis.map((o) => o.code));
-    lista = pedidos.filter((p) => setDisponiveis.has(p));
+    const setDisp = new Set(mapDisp.map((o) => o.code));
+    lista = pedidos.filter((p) => setDisp.has(p));
   }
   if (!lista.length) lista = ["TRT15"];
 
   const registrosBrutos = [];
   const items = [];
 
-  // ===== Loop por órgão =====
+  // helper para coletar candidatos (texto OU onclick/window.open)
+  async function collectCandidates(frame) {
+    return frame.evaluate(() => {
+      const out = [];
+      const resolveRel = (u) => {
+        try {
+          return new URL(u, location.href).href;
+        } catch {
+          return u || "";
+        }
+      };
+      const labelOk = (t) =>
+        /(Visualizar|Inteiro\s*Teor|Conte[uú]do|Exibir|Abrir|Texto|Teor)/i.test(t || "");
+      const onclickOk = (s) => /visualiz|conteud|inteiro|abrir|window\.open/i.test(s || "");
+
+      const els = Array.from(
+        document.querySelectorAll("a,button,input[type=button],input[type=submit]")
+      );
+      for (const el of els) {
+        const text = (el.textContent || el.value || "").trim();
+        const onclick = el.getAttribute?.("onclick") || "";
+        const hrefAttr = el.getAttribute?.("href") || "";
+        if (!labelOk(text) && !onclickOk(onclick)) continue;
+
+        let url = el.href || "";
+        if (!url && hrefAttr) url = resolveRel(hrefAttr);
+        if (!url) {
+          const m1 =
+            onclick.match(/'(https?:[^']+)'/) || onclick.match(/"(https?:[^"]+)"/);
+          const m2 = onclick.match(/window\.open\(['"]([^'"]+)['"]/i);
+          if (m1 && m1[1]) url = m1[1];
+          else if (m2 && m2[1]) url = resolveRel(m2[1]);
+        }
+        if (url) out.push(url);
+      }
+
+      // fallback: qualquer <a> do domínio DEJT
+      document.querySelectorAll("a[href]").forEach((a) => {
+        const href = a.getAttribute("href") || "";
+        try {
+          const full = a.href || resolveRel(href);
+          if (/dejt\.jt\.jus\.br/i.test(full)) out.push(full);
+        } catch {}
+      });
+
+      return Array.from(new Set(out));
+    });
+  }
+
   for (const orgao of lista) {
-    // Seleciona o órgão no <select>
     await page.evaluate((orgao) => {
       const sel =
         document.querySelector(
@@ -360,76 +460,29 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       const opts = Array.from(sel.options || []);
       const norm = (s = "") =>
         s.toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
-      const alvo = opts.find(
-        (o) => norm(o.textContent || "") === orgao.toUpperCase()
-      );
+      const alvo = opts.find((o) => norm(o.textContent || "") === orgao.toUpperCase());
       if (!alvo) return false;
       sel.value = alvo.value;
       sel.dispatchEvent(new Event("change"));
       return true;
     }, orgao);
 
-    // 3) Clica "Pesquisar"
     try {
       await Promise.all([
-        page.click(
-          'input[type="submit"][value="Pesquisar"], input#btnPesquisar, button'
-        ),
+        page.click('input[type="submit"][value="Pesquisar"], input#btnPesquisar, button'),
         page.waitForNetworkIdle({ idleTime: 800, timeout: 30000 }),
       ]);
     } catch {}
 
-    // 4) Coleta links “Visualizar/Inteiro Teor/Conteúdo/Exibir/Abrir”
-    async function _collectVisualLinksFrom(frame) {
-      return frame.evaluate(() => {
-        const out = [];
-        const labelHit = (el) => {
-          const t = (el.textContent || el.value || "").trim();
-          return /(Visualizar|Inteiro\s*Teor|Conte[uú]do|Exibir|Abrir)/i.test(t);
-        };
-        const takeUrl = (el) => {
-          let href =
-            el.href ||
-            el.getAttribute?.("data-href") ||
-            el.getAttribute?.("onclick") ||
-            "";
-          if (!href) return "";
-          if (href.startsWith("javascript:")) {
-            const m = href.match(/'(https?:[^']+)'/);
-            if (m) href = m[1];
-          }
-          return href;
-        };
-
-        // anchors/botões/inputs com rótulo útil
-        document
-          .querySelectorAll("a,button,input[type=button],input[type=submit]")
-          .forEach((el) => {
-            if (!labelHit(el)) return;
-            const url = takeUrl(el);
-            if (url) out.push(url);
-          });
-
-        // fallback: qualquer <a> que aponte pro domínio do DEJT
-        document.querySelectorAll("a[href]").forEach((a) => {
-          const href = a.getAttribute("href") || "";
-          if (/dejt\.jt\.jus\.br/i.test(href)) out.push(a.href || href);
-        });
-
-        return Array.from(new Set(out));
-      });
-    }
-
     let linksTexto = [];
     try {
-      linksTexto = await _collectVisualLinksFrom(page);
+      linksTexto = await collectCandidates(page);
     } catch {}
 
     if (!linksTexto.length) {
-      const frames = page.frames();
-      for (const fr of frames) {
+      for (const fr of page.frames()) {
         try {
-          const got = await _collectVisualLinksFrom(fr);
+          const got = await collectCandidates(fr);
           if (got?.length) {
             linksTexto = got;
             break;
@@ -439,15 +492,13 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     }
 
     if (!linksTexto.length) {
-      // debug de “nada encontrado” para este órgão
       registrosBrutos.push({
-        href: `(sem links 'Visualizar/Inteiro Teor' p/ ${orgao})`,
+        href: `(sem links 'Visualizar/Inteiro Teor/onclick' p/ ${orgao})`,
         tam: 0,
       });
       continue;
     }
 
-    // varre páginas de texto
     for (let i = 0; i < linksTexto.length; i++) {
       if (items.length >= limit) break;
       try {
@@ -459,15 +510,12 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
         registrosBrutos.push({ href, tam: conteudo.length });
 
-        // Heurística de presença de ato
         if (!RX_ALVAR.test(conteudo)) continue;
 
-        // Processo
         const procs = (conteudo.match(RX_PROC) || []).slice(0, 1);
         const processo = procs[0] || "";
         if (!processo) continue;
 
-        // Maior valor encontrado
         let valorCents = NaN;
         let m;
         while ((m = RX_MOEDA.exec(conteudo))) {
@@ -476,7 +524,6 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
         }
         if (!Number.isFinite(valorCents)) continue;
 
-        // Nome PF
         const pf_nome = pickProvavelPF(conteudo);
         if (!pf_nome) continue;
 
@@ -493,24 +540,21 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
           link_oficial: href,
         });
       } catch {
-        // ignora erro por item
+        /* ignore item error */
       }
     }
     if (items.length >= limit) break;
   }
 
   await browser.close();
-
-  // Mantém os brutos (para debug no endpoint)
   return { items, registrosBrutos, totalBruto: registrosBrutos.length };
 }
 
-// ===== /scan — JSON (agora com ?debug=1)
+/** ===================== /scan ===================== */
 app.get("/scan", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 60), 120);
-    const tribunais =
-      String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15") || "TRT15";
+    const tribunais = String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15") || "TRT15";
     const data = req.query.data || null;
     const wantDebug = String(req.query.debug || "0") === "1";
 
@@ -520,14 +564,11 @@ app.get("/scan", async (req, res) => {
       data,
     });
 
-    // Filtro TORRE
     const filtrados = brutos.filter((c) => {
       const cents = Number(c.valor_centavos);
       const isPF = _parecePF(c.pf_nome);
       const atoPronto = RX_ALVAR.test(String(c.tipo_ato || ""));
-      return (
-        c.tribunal && c.processo && isPF && cents >= MIN_TICKET_CENTS && atoPronto
-      );
+      return c.tribunal && c.processo && isPF && cents >= MIN_TICKET_CENTS && atoPronto;
     });
 
     if (wantDebug) {
@@ -538,29 +579,23 @@ app.get("/scan", async (req, res) => {
         total_bruto: totalBruto,
         total_filtrado: filtrados.length,
         amostras_brutas: registrosBrutos.slice(0, 10),
-        itens_filtrados_preview: filtrados.slice(
-          0,
-          Math.min(5, filtrados.length)
-        ),
+        itens_filtrados_preview: filtrados.slice(0, Math.min(5, filtrados.length)),
       });
     }
 
     res.json({ ok: true, items: filtrados.slice(0, limit) });
   } catch (e) {
     console.error("Erro /scan:", e);
-    res
-      .status(500)
-      .json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
   }
 });
 
-// ===== /relatorio — PDF consolidado (top N) + ?debug=1
+/** ===================== /relatorio ===================== */
 app.get("/relatorio", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 15), 50);
     const data = req.query.data || null;
-    const tribunais =
-      String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15") || "TRT15";
+    const tribunais = String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15") || "TRT15";
     const wantDebug = String(req.query.debug || "0") === "1";
 
     const { items: brutos, registrosBrutos, totalBruto } = await scanMiner({
@@ -579,7 +614,6 @@ app.get("/relatorio", async (req, res) => {
       .slice(0, limit);
 
     if (wantDebug) {
-      // sai em JSON pra inspeção
       return res.json({
         ok: true,
         data,
@@ -587,10 +621,7 @@ app.get("/relatorio", async (req, res) => {
         total_bruto: totalBruto,
         total_filtrado: filtrados.length,
         amostras_brutas: registrosBrutos.slice(0, 10),
-        itens_filtrados_preview: filtrados.slice(
-          0,
-          Math.min(5, filtrados.length)
-        ),
+        itens_filtrados_preview: filtrados.slice(0, Math.min(5, filtrados.length)),
       });
     }
 
@@ -603,7 +634,6 @@ app.get("/relatorio", async (req, res) => {
       });
     }
 
-    // HTML da tabela
     const rows = filtrados
       .map(
         (c, i) => `
@@ -633,9 +663,7 @@ app.get("/relatorio", async (req, res) => {
   th{background:#f4f6f8;text-align:left}
   .meta{opacity:.75;font-size:12px;margin-bottom:12px}
 </style>
-<h1>Dossiê Consolidado — ${filtrados.length} casos (${safe(
-      tribunais
-    )} / ${dataLabel})</h1>
+<h1>Dossiê Consolidado — ${filtrados.length} casos (${safe(tribunais)} / ${dataLabel})</h1>
 <div class="meta">
   Regra TORRE: PF nominal • Ticket ≥ ${centavosToBRL(
     MIN_TICKET_CENTS
@@ -687,7 +715,7 @@ app.get("/relatorio", async (req, res) => {
   }
 });
 
-// ===== /gerar-dossie (individual)
+/** ===================== /gerar-dossie ===================== */
 app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   try {
     const {
@@ -717,15 +745,7 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       return res.status(400).json({
         ok: false,
         error: "Regras TORRE: PF nominal, ticket ≥ R$ 20k e ato pronto.",
-        debug: {
-          tribunal,
-          processo,
-          pf_nome,
-          valor_centavos,
-          tipo_ato,
-          hasTicket,
-          atoPronto,
-        },
+        debug: { tribunal, processo, pf_nome, valor_centavos, tipo_ato, hasTicket, atoPronto },
       });
     }
 
@@ -767,9 +787,8 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
 
     lastPdfFile = fileName;
 
-    const pitch1 = `${pf_nome}, no ${tribunal} proc. ${processo} há ${
-      tipo_ato || "e-Alvará"
-    } de ${valorBRL} em seu nome.\nTe guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
+    const pitch1 = `${pf_nome}, no ${tribunal} proc. ${processo} há ${tipo_ato || "e-Alvará"} de ${valorBRL} em seu nome.
+Te guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
     const wa = makeWaLink(pitch1);
     const email = makeEmailLink(
       `Dossiê — ${tribunal} — proc. ${processo}`,
@@ -792,12 +811,11 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   }
 });
 
-// ===== /batch — { items: [...] } → PDFs + CSV
+/** ===================== /batch ===================== */
 app.post("/batch", async (req, res) => {
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length)
-      return res.status(400).json({ ok: false, error: "Envie items: []" });
+    if (!items.length) return res.status(400).json({ ok: false, error: "Envie items: []" });
 
     const limit = pLimit(CONCURRENCY);
     const results = [];
@@ -815,7 +833,6 @@ app.post("/batch", async (req, res) => {
     }
     const out = await Promise.all(results);
 
-    // CSV
     const now = new Date();
     const stamp = now.toISOString().slice(0, 19).replace(/[:T]/g, "-");
     const csvName = `lote-${stamp}.csv`;
@@ -847,25 +864,18 @@ app.post("/batch", async (req, res) => {
     }
     await fsp.writeFile(csvPath, lines.join("\n"), "utf8");
 
-    return res.json({
-      ok: true,
-      items: out,
-      csv: `${BASE_URL}/exports/${csvName}`,
-    });
+    return res.json({ ok: true, items: out, csv: `${BASE_URL}/exports/${csvName}` });
   } catch (e) {
     console.error("Erro /batch:", e);
-    res
-      .status(500)
-      .json({ ok: false, error: "Erro no batch", cause: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: "Erro no batch", cause: String(e?.message || e) });
   }
 });
 
-// ===== /pack — { files: [...] } → zip
+/** ===================== /pack ===================== */
 app.post("/pack", async (req, res) => {
   try {
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
-    if (!files.length)
-      return res.status(400).json({ ok: false, error: "Envie files: []" });
+    if (!files.length) return res.status(400).json({ ok: false, error: "Envie files: []" });
 
     const zipName = `lote-${Date.now()}.zip`;
     const zipPath = path.join(EXPORTS_DIR, zipName);
@@ -885,21 +895,17 @@ app.post("/pack", async (req, res) => {
     });
   } catch (e) {
     console.error("Erro /pack:", e);
-    res
-      .status(500)
-      .json({ ok: false, error: "Erro no pack", cause: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: "Erro no pack", cause: String(e?.message || e) });
   }
 });
 
-// ===== Debug util
+/** ===================== Debug util ===================== */
 app.get("/pdf/proposta.pdf", (_req, res) => {
   if (!lastPdfFile) return res.status(404).send("PDF ainda não gerado.");
   return res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
 });
 app.get("/debug/last", (_req, res) => {
-  const exists = lastPdfFile
-    ? fs.existsSync(path.join(PDF_DIR, lastPdfFile))
-    : false;
+  const exists = lastPdfFile ? fs.existsSync(path.join(PDF_DIR, lastPdfFile)) : false;
   res.json({
     lastPdfFile,
     exists,
@@ -907,5 +913,4 @@ app.get("/debug/last", (_req, res) => {
   });
 });
 
-// ===== Start
 app.listen(PORT, () => console.log("Servidor rodando na porta", PORT));
