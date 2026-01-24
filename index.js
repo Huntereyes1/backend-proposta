@@ -115,6 +115,9 @@ const RX_PROC = /\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/g;
 const RX_MOEDA = /R\$\s*([\d\.]+,\d{2})/g;
 const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 
+// Helper para esperar (substitui waitForTimeout que foi removido do Puppeteer)
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 // ===== Debug endpoints
 app.get("/debug/env", (_req, res) => {
   res.json({
@@ -155,7 +158,7 @@ app.get("/debug/probe", async (req, res) => {
     await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
     
     // Espera extra para JSF carregar
-    await page.waitForTimeout(3000);
+    await sleep(3000);
     
     log("[probe] Página carregada, buscando select...");
     
@@ -267,7 +270,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   page.setDefaultTimeout(30000);
 
   await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-  await page.waitForTimeout(3000);
+  await sleep(3000);
 
   log("[miner] Página DEJT carregada");
 
@@ -425,7 +428,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       continue;
     }
 
-    await page.waitForTimeout(1000);
+    await sleep(1000);
 
     // Clica em Pesquisar
     try {
@@ -445,11 +448,11 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
           if (submit) { submit.click(); return true; }
           return false;
         }),
-        page.waitForTimeout(2000)
+        sleep(2000)
       ]);
       
       await page.waitForNetworkIdle({ idleTime: 1500, timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(2000);
+      await sleep(2000);
       
     } catch (e) {
       log(`[miner] Erro ao pesquisar: ${e.message}`);
