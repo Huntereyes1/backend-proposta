@@ -1,5 +1,5 @@
-// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.5, DEJT + Ajax submitForm)
-// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last, /debug/probe, /debug/probe-links
+// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.6, DEJT + Ajax submitForm + contadores)
+// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last, /debug/probe, /debug/probe-links, /debug/env
 
 import express from "express";
 import cors from "cors";
@@ -13,7 +13,6 @@ import puppeteer from "puppeteer";
 import QRCode from "qrcode";
 import { fileURLToPath } from "url";
 
-// ===== Paths / Boot =====
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -28,7 +27,7 @@ const TEMPLATE_PATH = path.join(__dirname, "template.html");
 const MIN_TICKET_CENTS = Number(process.env.MIN_TICKET_CENTS || 2_000_000); // 20k
 const CONCURRENCY = Number(process.env.CONCURRENCY || 3);
 const SCAN_TRIBUNAIS = String(process.env.SCAN_TRIBUNAIS || "TRT15");
-const DEMO = false; // SEMPRE DESLIGADO
+const DEMO = /^(1|true|on)$/i.test(String(process.env.DEMO || "false"));
 
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 if (!fs.existsSync(EXPORTS_DIR)) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
@@ -39,7 +38,6 @@ app.use(morgan("tiny"));
 
 let lastPdfFile = null;
 
-// Servir PDFs e exports
 app.use(
   "/pdf",
   express.static(PDF_DIR, {
@@ -58,28 +56,25 @@ app.use(
 );
 
 app.get("/", (_req, res) =>
-  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.5 — DEJT Ajax")
+  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.6 — DEJT Ajax")
 );
 app.get("/health", (_req, res) =>
   res.json({ ok: true, now: new Date().toISOString() })
 );
 
-// ===== Utils =====
+// ===== Utils
 const toNumber = (v) =>
   typeof v === "number"
     ? v
     : Number(String(v ?? "").replace(/\./g, "").replace(",", "."));
-
 const centavosToBRL = (c) =>
   (Math.round(c) / 100).toLocaleString("pt-BR", {
     style: "currency",
     currency: "BRL",
     minimumFractionDigits: 2,
   });
-
 const safe = (s = "") =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
 function parseDataPtBRorISO(s) {
   if (!s) return "";
   const str = String(s).trim();
@@ -93,9 +88,9 @@ function parseDataPtBRorISO(s) {
   return isNaN(d) ? "" : d;
 }
 
+// ===== Template
 async function renderFromTemplate(vars) {
   let html = await fsp.readFile(TEMPLATE_PATH, "utf8");
-  // QRCode
   let qrcodeDataUrl = "";
   const link = (vars.id_ato || vars.link_oficial || "").toString().trim();
   if (link) {
@@ -109,7 +104,6 @@ async function renderFromTemplate(vars) {
   }
   return html;
 }
-
 function makeWaLink(text) {
   return "https://wa.me/?text=" + encodeURIComponent(text);
 }
@@ -119,7 +113,7 @@ function makeEmailLink(subject, body) {
   )}`;
 }
 
-// ===== Heurísticas e RegEx para DEJT =====
+// ===== Heurísticas / RegEx
 const DEJT_URL =
   "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y";
 const RX_PROC = /\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/g;
@@ -159,7 +153,23 @@ function pickProvavelPF(texto) {
   return "";
 }
 
-// ===================== Debug endpoints =====================
+// ===================== Debug
+app.get("/debug/env", (_req, res) => {
+  res.json({
+    BASE_URL,
+    DEMO,
+    MIN_TICKET_CENTS,
+    SCAN_TRIBUNAIS,
+    CONCURRENCY,
+    PDF_DIR,
+    EXPORTS_DIR,
+    TZ: process.env.TZ || null,
+    PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH
+      ? "(set)"
+      : "(unset)",
+  });
+});
+
 app.get("/debug/probe", async (req, res) => {
   try {
     const data = String(req.query.data || "");
@@ -267,7 +277,6 @@ app.get("/debug/probe-links", async (req, res) => {
       if (fim) fim.value = dataPt;
     }, dataPt);
 
-    // escolhe tribunal
     const alvoCode = String(tribunais).split(",")[0] || "TRT15";
     await page.evaluate((alvoCode) => {
       const norm = (s = "") =>
@@ -295,22 +304,21 @@ app.get("/debug/probe-links", async (req, res) => {
       ]);
     } catch {}
 
-    // coleta âncoras e inputs clicáveis (texto / url / onclick)
     const rows = await page.evaluate(() => {
       const out = [];
-      const takeText = (el) => {
-        const t = (el.textContent || el.value || "").trim();
-        return t || "";
-      };
+      const takeText = (el) =>
+        (el.textContent || el.value || "").trim() || "";
       const push = (el) =>
         out.push({
           text: takeText(el),
           url: el.href || el.getAttribute?.("href") || null,
           onclick: el.getAttribute?.("onclick") || null,
         });
-
-      document.querySelectorAll("a,button,input[type=button],input[type=submit]").forEach(push);
-
+      document
+        .querySelectorAll(
+          "a,button,input[type=button],input[type=submit]"
+        )
+        .forEach(push);
       return out;
     });
 
@@ -321,11 +329,10 @@ app.get("/debug/probe-links", async (req, res) => {
   }
 });
 
-// ===================== Miner real (DEJT) =====================
+// ===================== Miner
 async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
-  if (DEMO) return { items: [], registrosBrutos: [], totalBruto: 0 };
+  if (DEMO) return { items: [], registrosBrutos: [], totalBruto: 0, discards: {} };
 
-  // datas
   const d = data ? new Date(data) : new Date();
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -344,10 +351,8 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   page.setDefaultNavigationTimeout(45000);
   page.setDefaultTimeout(45000);
 
-  // abre página
   await page.goto(DEJT_URL, { waitUntil: "domcontentloaded" });
 
-  // datas
   await page.evaluate((dataPt) => {
     const ini =
       document.querySelector('input[name="dataIni"], input#dataIni') || null;
@@ -367,7 +372,6 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     }
   }, dataPt);
 
-  // ===== normalizador e leitura de órgãos =====
   const norm = (s = "") =>
     s
       .toUpperCase()
@@ -406,8 +410,9 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   const registrosBrutos = [];
   const outItems = [];
 
-  // ===== helper: abrir item por source (Ajax) e coletar links de texto =====
-  async function collectLinksOnCurrent(pageOrFrame) {
+  const discards = { sem_ato: 0, sem_processo: 0, sem_valor: 0, sem_pf: 0 };
+
+  async function collectLinksIn(pageOrFrame) {
     try {
       return await pageOrFrame.evaluate(() => {
         const out = [];
@@ -428,7 +433,6 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
           }
           return href;
         };
-
         document
           .querySelectorAll("a,button,input[type=button],input[type=submit]")
           .forEach((el) => {
@@ -436,18 +440,27 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
             const url = takeUrl(el);
             if (url) out.push(url);
           });
-
-        // fallback: qualquer <a> do domínio DEJT
         document.querySelectorAll("a[href]").forEach((a) => {
           const href = a.getAttribute("href") || "";
           if (/dejt\.jt\.jus\.br/i.test(href)) out.push(a.href || href);
         });
-
         return Array.from(new Set(out));
       });
     } catch {
       return [];
     }
+  }
+
+  async function collectLinksAllContexts() {
+    const links = new Set(await collectLinksIn(page));
+    const frames = page.frames();
+    for (const fr of frames) {
+      try {
+        const got = await collectLinksIn(fr);
+        for (const u of got) links.add(u);
+      } catch {}
+    }
+    return Array.from(links);
   }
 
   async function clickAjaxSource(page, sourceId) {
@@ -456,14 +469,14 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
         if (typeof window.submitForm === "function") {
           window.submitForm("corpo:formulario", 1, { source: src });
         } else {
-          // tenta disparar via botão equivalente
           const btn = Array.from(
-            document.querySelectorAll("a,button,input[type=button],input[type=submit]")
+            document.querySelectorAll(
+              "a,button,input[type=button],input[type=submit]"
+            )
           ).find((el) => (el.getAttribute("onclick") || "").includes(src));
           btn?.click?.();
         }
       }, sourceId);
-      // espera ocioso breve para Ajax renderizar
       await page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {});
       await page.waitForTimeout(400);
       return true;
@@ -472,7 +485,6 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     }
   }
 
-  // ===== Loop por órgão =====
   for (const orgao of lista) {
     // seleciona órgão
     await page.evaluate((orgao) => {
@@ -499,7 +511,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       ]);
     } catch {}
 
-    // lista de sources Ajax dos itens (plcLogicaItens:*:j_id132)
+    // identificar sources JSF (linhas)
     const sources = await page.evaluate(() => {
       const out = [];
       document
@@ -512,36 +524,29 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       return Array.from(new Set(out));
     });
 
-    // se não tiver sources, loga páginas "estáticas"
+    // se não houver sources, ainda tentamos links “visualizar/inteiro teor”
     if (!sources.length) {
-      const statLinks = await collectLinksOnCurrent(page);
+      const statLinks = await collectLinksAllContexts();
       if (statLinks.length) {
-        for (const href of statLinks.slice(0, 12)) {
-          registrosBrutos.push({ href, tam: href.length });
-        }
+        for (const href of statLinks.slice(0, 12)) registrosBrutos.push({ href, tam: href.length });
       } else {
-        registrosBrutos.push({
-          href: `(sem sources Ajax e sem 'Visualizar' p/ ${orgao})`,
-          tam: 0,
-        });
+        registrosBrutos.push({ href: `(sem sources Ajax e sem 'Visualizar' p/ ${orgao})`, tam: 0 });
       }
       continue;
     }
 
-    // varre cada linha (source) abrindo e coletando links de texto
     for (const src of sources) {
       if (outItems.length >= limit) break;
 
       const okClick = await clickAjaxSource(page, src);
       if (!okClick) continue;
 
-      // tenta pegar links de “conteúdo/inteiro teor”
-      let linksTexto = await collectLinksOnCurrent(page);
+      const linksTexto = await collectLinksAllContexts();
 
-      // abre cada link candidato, extrai texto e aplica regra TORRE
       for (const href of linksTexto) {
         if (outItems.length >= limit) break;
         try {
+          console.log("[open]", orgao, href);
           const pg = await browser.newPage();
           await pg.goto(href, { waitUntil: "domcontentloaded" });
           const conteudo = await pg.$eval("body", (el) => el.innerText || "");
@@ -549,11 +554,17 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
           registrosBrutos.push({ href, tam: conteudo.length });
 
-          if (!RX_ALVAR.test(conteudo)) continue;
+          if (!RX_ALVAR.test(conteudo)) {
+            discards.sem_ato++;
+            continue;
+          }
 
           const procs = (conteudo.match(RX_PROC) || []).slice(0, 1);
           const processo = procs[0] || "";
-          if (!processo) continue;
+          if (!processo) {
+            discards.sem_processo++;
+            continue;
+          }
 
           let valorCents = NaN;
           let m;
@@ -561,10 +572,16 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
             const cents = brlToCents(m[1]);
             if (!Number.isFinite(valorCents) || cents > valorCents) valorCents = cents;
           }
-          if (!Number.isFinite(valorCents)) continue;
+          if (!Number.isFinite(valorCents)) {
+            discards.sem_valor++;
+            continue;
+          }
 
           const pf_nome = pickProvavelPF(conteudo);
-          if (!pf_nome) continue;
+          if (!pf_nome) {
+            discards.sem_pf++;
+            continue;
+          }
 
           outItems.push({
             tribunal: orgao,
@@ -589,10 +606,10 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
   await browser.close();
 
-  return { items: outItems, registrosBrutos, totalBruto: registrosBrutos.length };
+  return { items: outItems, registrosBrutos, totalBruto: registrosBrutos.length, discards };
 }
 
-// ===== /scan — JSON (agora com Ajax) + ?debug=1
+// ===== /scan
 app.get("/scan", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 60), 120);
@@ -601,7 +618,7 @@ app.get("/scan", async (req, res) => {
     const data = req.query.data || null;
     const wantDebug = String(req.query.debug || "0") === "1";
 
-    const { items: brutos, registrosBrutos, totalBruto } = await scanMiner({
+    const { items: brutos, registrosBrutos, totalBruto, discards } = await scanMiner({
       limit,
       tribunais,
       data,
@@ -622,6 +639,7 @@ app.get("/scan", async (req, res) => {
         total_bruto: totalBruto,
         total_filtrado: filtrados.length,
         amostras_brutas: registrosBrutos.slice(0, 10),
+        contadores_descartes: discards,
         itens_filtrados_preview: filtrados.slice(0, Math.min(5, filtrados.length)),
       });
     }
@@ -629,13 +647,11 @@ app.get("/scan", async (req, res) => {
     res.json({ ok: true, items: filtrados.slice(0, limit) });
   } catch (e) {
     console.error("Erro /scan:", e);
-    res
-      .status(500)
-      .json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
   }
 });
 
-// ===== /relatorio — PDF consolidado (top N) + ?debug=1
+// ===== /relatorio
 app.get("/relatorio", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 15), 50);
@@ -644,7 +660,7 @@ app.get("/relatorio", async (req, res) => {
       String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15") || "TRT15";
     const wantDebug = String(req.query.debug || "0") === "1";
 
-    const { items: brutos, registrosBrutos, totalBruto } = await scanMiner({
+    const { items: brutos, registrosBrutos, totalBruto, discards } = await scanMiner({
       limit: limit * 3,
       tribunais,
       data,
@@ -666,6 +682,7 @@ app.get("/relatorio", async (req, res) => {
         tribunais,
         total_bruto: totalBruto,
         total_filtrado: filtrados.length,
+        contadores_descartes: discards,
         amostras_brutas: registrosBrutos.slice(0, 10),
         itens_filtrados_preview: filtrados.slice(0, Math.min(5, filtrados.length)),
       });
@@ -763,7 +780,7 @@ app.get("/relatorio", async (req, res) => {
   }
 });
 
-// ===== /gerar-dossie (individual)
+// ===== /gerar-dossie
 app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   try {
     const {
@@ -862,13 +879,11 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
     });
   } catch (e) {
     console.error("Erro /gerar-dossie:", e);
-    return res
-      .status(500)
-      .json({ ok: false, error: "Erro ao gerar PDF", cause: String(e?.message || e) });
+    return res.status(500).json({ ok: false, error: "Erro ao gerar PDF", cause: String(e?.message || e) });
   }
 });
 
-// ===== /batch — { items: [...] } → PDFs + CSV
+// ===== /batch
 app.post("/batch", async (req, res) => {
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -929,13 +944,11 @@ app.post("/batch", async (req, res) => {
     });
   } catch (e) {
     console.error("Erro /batch:", e);
-    res
-      .status(500)
-      .json({ ok: false, error: "Erro no batch", cause: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: "Erro no batch", cause: String(e?.message || e) });
   }
 });
 
-// ===== /pack — { files: [...] } → zip
+// ===== /pack
 app.post("/pack", async (req, res) => {
   try {
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
@@ -960,9 +973,7 @@ app.post("/pack", async (req, res) => {
     });
   } catch (e) {
     console.error("Erro /pack:", e);
-    res
-      .status(500)
-      .json({ ok: false, error: "Erro no pack", cause: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: "Erro no pack", cause: String(e?.message || e) });
   }
 });
 
