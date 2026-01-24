@@ -129,45 +129,37 @@ function extractWindowOpenUrl(onclick) {
 // Helper: abre o primeiro caderno do tribunal na listagem
 async function openFirstCaderno(page, tribunalNumero) {
   // O link de baixar usa submitForm via onclick, não é um link normal
-  // Precisamos executar o onclick diretamente
+  // Precisamos executar o onclick diretamente (removendo "return false")
   
   const resultado = await page.evaluate(() => {
+    // Função para executar onclick de forma segura
+    function execOnclick(onclick) {
+      if (!onclick) return false;
+      // Remove "return false;" ou "return true;" do final
+      const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, '');
+      try {
+        eval(cleaned);
+        return true;
+      } catch (e) {
+        console.log('eval error:', e);
+        return false;
+      }
+    }
+    
     // Busca o link com classe "link-download" ou onclick com "plcLogicaItens"
-    const links = document.querySelectorAll('a.link-download, a[onclick*="plcLogicaItens"]');
+    const links = document.querySelectorAll('a.link-download, a[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
     
     if (links.length > 0) {
       const link = links[0];
       const onclick = link.getAttribute('onclick') || '';
       
-      if (onclick) {
-        // Executa o onclick diretamente
-        try {
-          eval(onclick);
-          return { ok: true, method: 'eval onclick link-download', onclick: onclick.substring(0, 100) };
-        } catch (e) {
-          return { ok: false, error: 'eval falhou: ' + e.message };
-        }
+      if (onclick && execOnclick(onclick)) {
+        return { ok: true, method: 'eval onclick link-download', onclick: onclick.substring(0, 100) };
       }
       
       // Fallback: clica no link
       link.click();
       return { ok: true, method: 'click link-download' };
-    }
-    
-    // Busca qualquer elemento com onclick contendo "plcLogicaItens" ou "j_id132"
-    const elementos = document.querySelectorAll('[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
-    if (elementos.length > 0) {
-      const el = elementos[0];
-      const onclick = el.getAttribute('onclick') || '';
-      
-      if (onclick) {
-        try {
-          eval(onclick);
-          return { ok: true, method: 'eval onclick plcLogicaItens', onclick: onclick.substring(0, 100) };
-        } catch (e) {
-          return { ok: false, error: 'eval falhou: ' + e.message };
-        }
-      }
     }
     
     // Tenta submitForm diretamente se soubermos o source
