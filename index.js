@@ -157,7 +157,37 @@ app.get("/debug/pesquisa", async (req, res) => {
     await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
     await sleep(2000);
     
-    // Preenche datas
+    // 1. Seleciona tipo de caderno (Judiciário = J)
+    log("[debug] Selecionando caderno Judiciário...");
+    await page.evaluate(() => {
+      // Busca radio button do caderno Judiciário
+      const radios = document.querySelectorAll('input[type="radio"]');
+      for (const r of radios) {
+        if (r.value === "J" || r.id?.includes("tipoCaderno") || r.name?.includes("tipoCaderno")) {
+          r.checked = true;
+          r.click();
+          r.dispatchEvent(new Event("change", { bubbles: true }));
+          r.dispatchEvent(new Event("click", { bubbles: true }));
+        }
+      }
+      // Também tenta marcar por label
+      const labels = document.querySelectorAll('label');
+      for (const l of labels) {
+        if ((l.textContent || "").toLowerCase().includes("judiciário")) {
+          const forId = l.getAttribute("for");
+          if (forId) {
+            const radio = document.getElementById(forId);
+            if (radio) {
+              radio.checked = true;
+              radio.click();
+            }
+          }
+        }
+      }
+    });
+    await sleep(500);
+    
+    // 2. Preenche datas
     log("[debug] Preenchendo datas...");
     await page.evaluate((dataPt) => {
       const inputs = document.querySelectorAll('input');
@@ -174,40 +204,101 @@ app.get("/debug/pesquisa", async (req, res) => {
         }
       });
     }, dataPt);
+    await sleep(500);
     
-    // Seleciona tribunal
+    // 3. Seleciona tribunal
     log("[debug] Selecionando tribunal...");
     const numTribunal = tribunais.replace(/\D/g, "");
-    await page.evaluate((numTribunal) => {
+    const selecionouTribunal = await page.evaluate((numTribunal) => {
       const selects = document.querySelectorAll('select');
       for (const sel of selects) {
         if (sel.options && sel.options.length > 5) {
           for (const opt of sel.options) {
-            const numOpt = (opt.textContent || "").replace(/\D/g, "");
+            const texto = opt.textContent || "";
+            const numOpt = texto.replace(/\D/g, "");
             if (numOpt === numTribunal) {
               sel.value = opt.value;
               sel.dispatchEvent(new Event("change", { bubbles: true }));
-              return true;
+              return texto;
             }
           }
         }
       }
-      return false;
+      return null;
     }, numTribunal);
-    
+    log(`[debug] Tribunal selecionado: ${selecionouTribunal}`);
     await sleep(1000);
     
-    // Clica em Pesquisar
+    // 4. Clica em Pesquisar usando diferentes métodos
     log("[debug] Clicando em Pesquisar...");
-    await page.evaluate(() => {
-      const btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]') ||
-                  document.querySelector('input[value*="Pesquisar" i]');
-      if (btn) btn.click();
-    });
     
-    // Espera Ajax
-    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
+    // Primeiro tenta o método normal
+    const resultadoClique = await page.evaluate(() => {
+      // Método 1: busca botão por ID
+      let btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]');
+      if (btn) {
+        btn.click();
+        return "clicou por ID";
+      }
+      
+      // Método 2: busca por value
+      btn = document.querySelector('input[value="Pesquisar"]');
+      if (btn) {
+        btn.click();
+        return "clicou por value";
+      }
+      
+      // Método 3: busca todos os inputs e buttons
+      const elementos = document.querySelectorAll('input[type="submit"], input[type="button"], button');
+      for (const el of elementos) {
+        const valor = (el.value || el.textContent || "").trim();
+        if (valor.toLowerCase() === "pesquisar") {
+          el.click();
+          return "clicou por texto: " + valor;
+        }
+      }
+      
+      // Método 4: tenta submeter o formulário diretamente
+      const form = document.querySelector('form[id*="formulario"]');
+      if (form) {
+        // Não faz submit direto pois JSF precisa de processamento especial
+        return "form encontrado mas não submetido";
+      }
+      
+      return "nenhum botão encontrado";
+    });
+    log(`[debug] Resultado clique: ${resultadoClique}`);
+    
+    // Espera Ajax/navegação
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {}),
+      page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {}),
+    ]);
     await sleep(3000);
+    
+    // Se ainda não tem resultados, tenta submeter via JSF
+    let bodyLength = await page.evaluate(() => document.body.innerText.length);
+    log(`[debug] Body após primeiro clique: ${bodyLength}`);
+    
+    if (bodyLength < 5000) {
+      log("[debug] Tentando submit via formulário JSF...");
+      await page.evaluate(() => {
+        // Tenta encontrar e executar a função de submit do JSF
+        const form = document.querySelector('form');
+        if (form && typeof form.submit === 'function') {
+          // Busca o botão pesquisar e simula o onclick dele
+          const btn = document.querySelector('input[value="Pesquisar"]');
+          if (btn) {
+            const onclick = btn.getAttribute('onclick');
+            if (onclick) {
+              try { eval(onclick); } catch(e) {}
+            }
+          }
+        }
+      });
+      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+      await sleep(2000);
+    }
     
     // Captura resultado
     const resultado = await page.evaluate(() => {
@@ -219,17 +310,28 @@ app.get("/debug/pesquisa", async (req, res) => {
         if (texto || href) links.push({ texto, href });
       });
       
+      // Busca especificamente por links de "visualizar" ou similares
+      const linksVisualizacao = [];
+      document.querySelectorAll("a").forEach(a => {
+        const texto = (a.textContent || "").toLowerCase();
+        if (texto.includes("visualizar") || texto.includes("inteiro") || texto.includes("conteúdo")) {
+          linksVisualizacao.push({ texto: a.textContent, href: a.href });
+        }
+      });
+      
       return {
         tamanhoBody: body.length,
         temAlvara: /alvar[aá]/i.test(body),
         temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
-        trechoBody: body.substring(0, 2000),
+        trechoBody: body.substring(0, 3000),
         totalLinks: links.length,
-        primeirosLinks: links.slice(0, 20)
+        primeirosLinks: links.slice(0, 15),
+        linksVisualizacao
       };
     });
     
-    log(`[debug] Body: ${resultado.tamanhoBody} chars, alvará: ${resultado.temAlvara}, processo: ${resultado.temProcesso}`);
+    log(`[debug] Body final: ${resultado.tamanhoBody} chars, alvará: ${resultado.temAlvara}, processo: ${resultado.temProcesso}`);
+    log(`[debug] Links de visualização: ${resultado.linksVisualizacao.length}`);
     
     await browser.close();
     
