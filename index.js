@@ -128,101 +128,69 @@ function extractWindowOpenUrl(onclick) {
 
 // Helper: abre o primeiro caderno do tribunal na listagem
 async function openFirstCaderno(page, tribunalNumero) {
-  const tryIn = async (ctx) => {
-    try {
-      // 1) Tenta achar botão "Baixar" ou link do caderno via XPath
-      const handles = await ctx.$$('a, button, input[type="button"]');
+  // O link de baixar usa submitForm via onclick, não é um link normal
+  // Precisamos executar o onclick diretamente
+  
+  const resultado = await page.evaluate(() => {
+    // Busca o link com classe "link-download" ou onclick com "plcLogicaItens"
+    const links = document.querySelectorAll('a.link-download, a[onclick*="plcLogicaItens"]');
+    
+    if (links.length > 0) {
+      const link = links[0];
+      const onclick = link.getAttribute('onclick') || '';
       
-      for (const handle of handles) {
-        const info = await handle.evaluate(el => ({
-          texto: (el.textContent || el.value || "").trim(),
-          href: el.getAttribute("href") || "",
-          onclick: el.getAttribute("onclick") || ""
-        }));
-        
-        // Verifica se é link de baixar/visualizar caderno
-        const textoLower = info.texto.toLowerCase();
-        if (textoLower.includes("baixar") || textoLower.includes("download") ||
-            info.onclick.includes("window.open") || 
-            (info.href && info.href.includes("download"))) {
-          
-          // Se tem window.open, extrai URL e navega
-          const urlFromOnclick = extractWindowOpenUrl(info.onclick);
-          if (urlFromOnclick) {
-            await ctx.goto(urlFromOnclick, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-            return 'goto(url caderno)';
-          }
-          
-          // Se tem href válido
-          if (info.href && info.href !== '#' && !info.href.startsWith('javascript:')) {
-            const url = info.href.startsWith('http') ? info.href : 'https://dejt.jt.jus.br' + info.href;
-            await ctx.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-            return 'goto(href caderno)';
-          }
-          
-          // Clica diretamente
-          await handle.evaluate(el => el.scrollIntoView({ block: 'center' }));
-          await handle.click({ delay: 30 });
-          return 'click(baixar)';
+      if (onclick) {
+        // Executa o onclick diretamente
+        try {
+          eval(onclick);
+          return { ok: true, method: 'eval onclick link-download', onclick: onclick.substring(0, 100) };
+        } catch (e) {
+          return { ok: false, error: 'eval falhou: ' + e.message };
         }
       }
       
-      // 2) Fallback: procura link que contenha "Edição" ou "Caderno"
-      for (const handle of handles) {
-        const texto = await handle.evaluate(el => (el.textContent || "").trim());
-        if (/Edi[çc][ãa]o.*Caderno|Caderno.*TRT/i.test(texto)) {
-          await handle.evaluate(el => el.scrollIntoView({ block: 'center' }));
-          await handle.click({ delay: 30 });
-          return 'click(título caderno)';
-        }
-      }
-      
-      // 3) Procura qualquer elemento clicável na área de resultados
-      const trs = await ctx.$$('tr');
-      for (const tr of trs) {
-        const texto = await tr.evaluate(el => el.textContent || "");
-        if (/Edi[çc][ãa]o|Caderno.*Judici/i.test(texto)) {
-          const link = await tr.$('a');
-          if (link) {
-            const onclick = await link.evaluate(el => el.getAttribute('onclick') || "");
-            const href = await link.evaluate(el => el.getAttribute('href') || "");
-            
-            const urlFromOnclick = extractWindowOpenUrl(onclick);
-            if (urlFromOnclick) {
-              await ctx.goto(urlFromOnclick, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-              return 'goto(url da tr)';
-            }
-            
-            if (href && href !== '#') {
-              const url = href.startsWith('http') ? href : 'https://dejt.jt.jus.br' + href;
-              await ctx.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-              return 'goto(href da tr)';
-            }
-            
-            await link.click({ delay: 30 });
-            return 'click(link na tr)';
-          }
-        }
-      }
-      
-      return null;
-    } catch (e) {
-      return null;
+      // Fallback: clica no link
+      link.click();
+      return { ok: true, method: 'click link-download' };
     }
-  };
-
-  // Tenta no main frame
-  let how = await tryIn(page);
-  if (how) return how;
-
-  // Tenta nos iframes
-  for (const f of page.frames()) {
-    if (f === page.mainFrame()) continue;
-    how = await tryIn(f);
-    if (how) return how + ' (iframe)';
+    
+    // Busca qualquer elemento com onclick contendo "plcLogicaItens" ou "j_id132"
+    const elementos = document.querySelectorAll('[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
+    if (elementos.length > 0) {
+      const el = elementos[0];
+      const onclick = el.getAttribute('onclick') || '';
+      
+      if (onclick) {
+        try {
+          eval(onclick);
+          return { ok: true, method: 'eval onclick plcLogicaItens', onclick: onclick.substring(0, 100) };
+        } catch (e) {
+          return { ok: false, error: 'eval falhou: ' + e.message };
+        }
+      }
+    }
+    
+    // Tenta submitForm diretamente se soubermos o source
+    if (typeof window.submitForm === 'function') {
+      try {
+        window.submitForm('corpo:formulario', 1, { source: 'corpo:formulario:plcLogicaItens:0:j_id132' });
+        return { ok: true, method: 'submitForm direto' };
+      } catch (e) {
+        return { ok: false, error: 'submitForm falhou: ' + e.message };
+      }
+    }
+    
+    return { ok: false, error: 'nenhum link encontrado' };
+  });
+  
+  if (resultado.ok) {
+    // Espera o conteúdo carregar
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
+    await sleep(2000);
+    return resultado.method;
   }
   
-  return 'caderno-não-encontrado';
+  return 'caderno-não-encontrado: ' + (resultado.error || '');
 }
 
 // Helper: espera o caderno carregar
