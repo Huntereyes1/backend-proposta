@@ -1,5 +1,5 @@
-// index.js — TORRE PF e-Alvará (TRT) — v5.1 (PDF destravado)
-// Endpoints principais: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/*
+// index.js — TORRE PF e-Alvará (TRT) — v5.1
+// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/*
 
 import express from "express";
 import cors from "cors";
@@ -38,7 +38,6 @@ app.use(morgan("tiny"));
 
 let lastPdfFile = null;
 
-// Static
 app.use("/pdf", express.static(PDF_DIR, {
   setHeaders: (res) => {
     res.setHeader("Content-Type", "application/pdf");
@@ -47,7 +46,7 @@ app.use("/pdf", express.static(PDF_DIR, {
 }));
 app.use("/exports", express.static(EXPORTS_DIR));
 
-app.get("/", (_req, res) => res.send("Backend TORRE v5.1 — DEJT (PDF destravado)"));
+app.get("/", (_req, res) => res.send("Backend TORRE v5.1 — DEJT Corrigido"));
 app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
 
 // ===== Utils
@@ -70,7 +69,7 @@ function brlToCents(brlStr) {
 function _parecePF(nome) {
   if (!nome) return false;
   const s = nome.toUpperCase();
-  if (s.includes(" LTDA") || s.includes(" S.A") || s.includes(" S/A") ||
+  if (s.includes(" LTDA") || s.includes(" S.A") || s.includes(" S/A") || 
       s.includes(" EPP") || s.includes(" MEI ") || s.includes(" EIRELI")) return false;
   return s.trim().split(/\s+/).length >= 2;
 }
@@ -102,33 +101,34 @@ async function renderFromTemplate(vars) {
   return html;
 }
 
-function makeWaLink(text) { return "https://wa.me/?text=" + encodeURIComponent(text); }
+function makeWaLink(text) {
+  return "https://wa.me/?text=" + encodeURIComponent(text);
+}
+
 function makeEmailLink(subject, body) {
   return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
-// ===== Constantes/Regex
+// ===== Regex
 const DEJT_URL = "https://dejt.jt.jus.br/dejt/f/n/diariocon";
 const RX_PROC = /\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/g;
 const RX_MOEDA = /R\$\s*([\d\.]+,\d{2})/g;
 const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 
-// Sleep helper
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Extrai URL de window.open()
 function extractWindowOpenUrl(onclick) {
   if (!onclick) return null;
   const m = String(onclick).match(/window\.open\(['"]([^'"]+)['"]/i);
   if (!m) return null;
-  return m[1].startsWith("http") ? m[1] : "https://dejt.jt.jus.br" + m[1];
+  return m[1].startsWith('http') ? m[1] : 'https://dejt.jt.jus.br' + m[1];
 }
 
-// Abre o primeiro caderno
+// Abre o primeiro caderno do tribunal
 async function openFirstCaderno(page, browser) {
   const newPagePromise = new Promise((resolve) => {
-    browser.once("targetcreated", async (target) => {
-      try { const newPage = await target.page(); resolve(newPage); } catch { resolve(null); }
+    browser.once('targetcreated', async (target) => {
+      try { resolve(await target.page()); } catch { resolve(null); }
     });
     setTimeout(() => resolve(null), 10000);
   });
@@ -136,42 +136,41 @@ async function openFirstCaderno(page, browser) {
   const resultado = await page.evaluate(() => {
     function execOnclick(onclick) {
       if (!onclick) return false;
-      const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, "");
+      const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, '');
       try { eval(cleaned); return true; } catch { return false; }
     }
-    const links = document.querySelectorAll('a.link-download, a[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
-    if (links.length > 0) {
-      const link = links[0];
+    const link = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
+    if (link) {
       const oc = link.getAttribute("onclick") || "";
-      if (oc && execOnclick(oc)) return { ok: true, method: "eval onclick" };
+      if (oc && execOnclick(oc)) return { ok: true, method: 'eval onclick' };
       link.click();
-      return { ok: true, method: "click" };
+      return { ok: true, method: 'click' };
     }
-    if (typeof window.submitForm === "function") {
+    if (typeof window.submitForm === 'function') {
       try {
-        window.submitForm("corpo:formulario", 1, { source: "corpo:formulario:plcLogicaItens:0:j_id132" });
-        return { ok: true, method: "submitForm direto" };
+        window.submitForm('corpo:formulario', 1, { source:'corpo:formulario:plcLogicaItens:0:j_id132' });
+        return { ok: true, method: 'submitForm direto' };
       } catch (e) { return { ok: false, error: e.message }; }
     }
-    return { ok: false, error: "nenhum link encontrado" };
+    return { ok: false, error: 'nenhum link encontrado' };
   });
 
-  if (!resultado.ok) return "caderno-não-encontrado: " + (resultado.error || "");
+  if (!resultado.ok) return 'caderno-não-encontrado: ' + (resultado.error || '');
+
   await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
   const newPage = await newPagePromise;
   if (newPage) {
     const newUrl = newPage.url();
-    await newPage.close();
-    if (newUrl && newUrl !== "about:blank") {
-      await page.goto(newUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-      return "navegou para nova página: " + newUrl.substring(0, 120);
+    await newPage.close().catch(()=>{});
+    if (newUrl && newUrl !== 'about:blank') {
+      await page.goto(newUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      return 'navegou para nova página: ' + newUrl.substring(0, 50);
     }
   }
-  await sleep(1000);
+  await sleep(1200);
   return resultado.method;
 }
 
-// Espera o caderno carregar
 async function waitCadernoLoaded(page) {
   await Promise.race([
     page.waitForSelector("table, .ui-datatable, .rich-table, a[href*='teor'], a[href*='visualizar']", { timeout: 15000 }),
@@ -180,22 +179,21 @@ async function waitCadernoLoaded(page) {
   await sleep(1000);
 }
 
-// Clique REAL no botão Pesquisar
 async function clickPesquisarReal(page) {
   const tryClickIn = async (ctx) => {
     try {
       const selId = '[id="corpo:formulario:botaoAcaoPesquisar"]';
       const btn = await ctx.$(selId);
       if (btn) {
-        await ctx.$eval(selId, el => el.scrollIntoView({ block: "center" }));
+        await ctx.$eval(selId, el => el.scrollIntoView({ block: 'center' }));
         await ctx.click(selId, { delay: 30 });
-        return "page.click(corpo:formulario:botaoAcaoPesquisar)";
+        return 'page.click(corpo:formulario:botaoAcaoPesquisar)';
       }
       const btnPesquisar = await ctx.$('input[value="Pesquisar"]');
       if (btnPesquisar) {
-        await ctx.$eval('input[value="Pesquisar"]', el => el.scrollIntoView({ block: "center" }));
+        await ctx.$eval('input[value="Pesquisar"]', el => el.scrollIntoView({ block: 'center' }));
         await ctx.click('input[value="Pesquisar"]', { delay: 30 });
-        return "page.click(input[value=Pesquisar])";
+        return 'page.click(input[value=Pesquisar])';
       }
       return null;
     } catch { return null; }
@@ -205,27 +203,53 @@ async function clickPesquisarReal(page) {
   for (const f of page.frames()) {
     if (f === page.mainFrame()) continue;
     how = await tryClickIn(f);
-    if (how) return how + " (in iframe)";
+    if (how) return how + ' (in iframe)';
   }
-  return "no-button-found";
+  return 'no-button-found';
 }
 
-// Espera resultado do JSF
 async function waitJsfResult(page, beforeLen) {
   await Promise.race([
-    page.waitForResponse(r => r.request().method() === "POST", { timeout: 15000 }),
+    page.waitForResponse(r => r.request().method() === 'POST', { timeout: 15000 }),
     page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {})
   ]).catch(() => {});
   await page.waitForSelector("table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar']", { timeout: 12000 }).catch(() => {});
   await page.waitForFunction(
-    prev => (document.body.innerText || "").length > prev + 500,
+    prev => (document.body.innerText || '').length > prev + 500,
     { timeout: 20000 },
     beforeLen
   ).catch(() => {});
   await sleep(700);
 }
 
-// ===== Debug ENV
+async function dispararPesquisaJSF(page) {
+  return await page.evaluate(() => {
+    const btn =
+      document.getElementById("corpo:formulario:botaoAcaoPesquisar") ||
+      Array.from(document.querySelectorAll('input[type="submit"],input[type="button"],button'))
+        .find(b => /pesquis/i.test((b.value || b.textContent || "")));
+
+    const form = document.getElementById("corpo:formulario") || btn?.form || document.querySelector("form");
+    const bid = btn?.id || null;
+    const fid = form?.id || null;
+
+    if (btn) {
+      const onclick = btn.getAttribute("onclick");
+      if (onclick) { try { eval(onclick); return "eval onclick(" + (bid || "no-id") + ")"; } catch {} }
+    }
+
+    try { if (bid && fid && window.A4J?.AJAX?.Submit) { window.A4J.AJAX.Submit(fid, bid, null, { similarityGroupingId: bid }); return "A4J.AJAX.Submit(" + bid + ")"; } } catch{}
+    try { if (bid && window.mojarra?.ab) { window.mojarra.ab(bid, null, "click", fid, 0); return "mojarra.ab(" + bid + ")"; } } catch{}
+    try { if (bid && window.PrimeFaces?.ab) { window.PrimeFaces.ab({ s: bid, f: fid }); return "PrimeFaces.ab(" + bid + ")"; } } catch{}
+    try { if (fid && typeof window.submitForm === "function") { window.submitForm(fid, 1, { source: bid || "corpo:formulario:botaoAcaoPesquisar" }); return "submitForm(" + fid + ")"; } } catch{}
+
+    if (btn) { const ev = new MouseEvent("click", { bubbles: true, cancelable: true }); btn.dispatchEvent(ev); if (typeof btn.click === "function") btn.click(); return "click(" + (bid || "no-id") + ")"; }
+    if (form) { form.submit(); return "form.submit"; }
+    return "no-dispatch";
+  });
+}
+
+// ===== Debug endpoints
 app.get("/debug/env", (_req, res) => {
   res.json({
     BASE_URL, DEMO, MIN_TICKET_CENTS, SCAN_TRIBUNAIS, CONCURRENCY,
@@ -234,7 +258,7 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
-// ===== Debug: DOWNLOAD (PDF destravado)
+// === /debug/download — captura a URL do PDF e re-baixa via Node fetch usando os cookies ===
 app.get("/debug/download", async (req, res) => {
   const logs = [];
   const log = (m) => { console.log(m); logs.push(m); };
@@ -254,41 +278,17 @@ app.get("/debug/download", async (req, res) => {
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     });
+
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
-
-    // Coletores de respostas (guardando o objeto Response real)
-    const responses = [];
-    page.on("response", (response) => {
-      try {
-        const url = response.url();
-        const status = response.status();
-        const contentType = (response.headers()["content-type"] || "").toLowerCase();
-        // Só guardamos o que interessa pra evitar lixo
-        if (/dejt|diario|diariocon/i.test(url) || /application\/pdf/i.test(contentType)) {
-          responses.push({ url, status, contentType, _resp: response });
-        }
-      } catch {}
-    });
-
-    // Track de novas páginas/popups
-    const newPages = [];
-    browser.on("targetcreated", async (target) => {
-      const type = target.type();
-      const url = target.url();
-      newPages.push({ type, url });
-    });
-
     await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    await sleep(1000);
+    await sleep(1200);
 
-    // Seleciona caderno + datas
+    // Prepara formulário (J + datas + órgão)
     await page.evaluate((dataPt) => {
       const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
       for (const r of radios) {
-        if (r.value === "J" || /judici/i.test(r.id || "")) {
-          r.checked = true; r.click();
-        }
+        if (r.value === "J" || /judici/i.test(r.id || "")) { r.checked = true; r.click(); r.dispatchEvent(new Event("change", { bubbles: true })); }
       }
       const all = Array.from(document.querySelectorAll("input"));
       const ini = all.find(i => /data.?ini/i.test((i.id || "") + (i.name || "")));
@@ -297,18 +297,13 @@ app.get("/debug/download", async (req, res) => {
       if (fim) { fim.value = dataPt; fim.dispatchEvent(new Event("change", { bubbles: true })); }
     }, dataPt);
 
-    // Seleciona órgão
     const numTribunal = tribunais.replace(/\D/g, "");
     await page.evaluate((num) => {
-      const selects = document.querySelectorAll("select");
+      const selects = document.querySelectorAll('select');
       for (const sel of selects) {
-        for (const opt of sel.options || []) {
+        for (const opt of sel.options) {
           const numOpt = (opt.textContent || "").replace(/\D/g, "");
-          if (numOpt === num) {
-            sel.value = opt.value;
-            sel.dispatchEvent(new Event("change", { bubbles: true }));
-            return;
-          }
+          if (numOpt === num) { sel.value = opt.value; sel.dispatchEvent(new Event("change", { bubbles: true })); return; }
         }
       }
     }, numTribunal);
@@ -318,107 +313,128 @@ app.get("/debug/download", async (req, res) => {
     await clickPesquisarReal(page);
     await waitJsfResult(page, 900);
 
-    // Captura info do link download
+    // Acha o link (JSF) do download
     const linkInfo = await page.evaluate(() => {
       const link = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"]');
       if (!link) return null;
       return {
-        href: link.getAttribute("href"),
-        onclick: link.getAttribute("onclick"),
+        href: link.getAttribute('href'),
+        onclick: link.getAttribute('onclick'),
         classe: link.className,
-        html: link.outerHTML.substring(0, 400)
+        html: link.outerHTML.substring(0, 300)
       };
     });
     log(`[download] Link encontrado: ${JSON.stringify(linkInfo)}`);
 
-    let pdfSaved = false;
-    let pdfFile = null;
-    let reason = "link-nao-encontrado";
+    let pdfSaved = false, pdfFile = null, urlPdf = null, reason = null;
+    const responsesMeta = [];
+    const newPages = [];
 
     if (linkInfo) {
-      // Zera o coletor de respostas só para o clique
-      responses.length = 0;
+      const pdfResponsePromise = page.waitForResponse(r => {
+        const ct = r.headers()['content-type'] || '';
+        return /application\/pdf/i.test(ct);
+      }, { timeout: 15000 }).catch(() => null);
 
-      // Clica real no link (não usamos eval pra evitar return false/JSF nuances)
-      try {
-        await page.click("a.link-download");
-      } catch {
-        // fallback: dispara via eval do onclick
+      // dispara click nativo (não eval) — deixa o JSF rolar
+      await page.click('a.link-download').catch(async () => {
+        // fallback: eval no onclick sem "return false"
         await page.evaluate(() => {
           const a = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"]');
           if (!a) return;
-          const oc = (a.getAttribute("onclick") || "").replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, "");
-          if (oc) { try { eval(oc); } catch {} }
+          const oc = (a.getAttribute('onclick') || '').replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, '');
+          try { eval(oc); } catch {}
         });
-      }
+      });
 
-      // Espera rede e possíveis redirects
-      await Promise.race([
-        page.waitForNetworkIdle({ idleTime: 1200, timeout: 15000 }).catch(() => {}),
-        sleep(3000)
-      ]);
+      // espera a resposta PDF
+      const pdfResp = await pdfResponsePromise;
 
-      const pdfCandidates = responses.filter(r => /application\/pdf/i.test(r.contentType));
-      if (pdfCandidates.length === 0) {
-        // Às vezes o servidor retorna PDF como octet-stream
-        pdfCandidates.push(...responses.filter(r =>
-          /octet-stream/i.test(r.contentType) && /dejt|diario|diariocon/i.test(r.url)
-        ));
-      }
-
-      if (pdfCandidates.length > 0) {
-        // Pega o último (mais recente)
-        const cand = pdfCandidates[pdfCandidates.length - 1];
+      // registra respostas úteis (metadados)
+      page.on('response', (r) => {
         try {
-          const buf = await cand._resp.buffer(); // <- pega o buffer do PDF
-          if (buf && buf.length > 500) {
-            const fname = `dejt-${numTribunal}-${yyyy}${mm}${dd}-${Date.now()}.pdf`;
-            const fpath = path.join(PDF_DIR, fname);
-            await fsp.writeFile(fpath, buf);
-            lastPdfFile = fname;
-            pdfSaved = true;
-            pdfFile = fname;
-            reason = "pdf-salvo";
+          const url = r.url();
+          const ct = r.headers()['content-type'] || '';
+          if (/dejt|diario/i.test(url)) {
+            responsesMeta.push({ url: url.substring(0, 150), status: r.status(), contentType: ct.substring(0, 60) });
+          }
+        } catch {}
+      });
+
+      browser.on('targetcreated', (t) => { newPages.push({ type: t.type(), url: t.url().substring(0,150) }); });
+
+      // Se pegamos a response, refaz o download via Node fetch com cookies da sessão
+      if (pdfResp) {
+        const pdfUrl = pdfResp.url();
+        const origin = new URL(pdfUrl).origin;
+
+        // cookies de sessão
+        const cookies = await page.cookies(origin).catch(() => []);
+        const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+        try {
+          const resp2 = await fetch(pdfUrl, {
+            method: "GET",
+            headers: {
+              "Accept": "application/pdf",
+              "Accept-Language": "pt-BR,pt;q=0.9",
+              "Cookie": cookieHeader,
+              "Referer": DEJT_URL,
+              "User-Agent": "Mozilla/5.0"
+            }
+          });
+
+          if (!resp2.ok) {
+            reason = `refetch-fail: ${resp2.status}`;
           } else {
-            reason = "buffer-pequeno-ou-vazio";
+            const ab = await resp2.arrayBuffer();
+            if (ab.byteLength < 1024) {
+              reason = "empty-buffer";
+            } else {
+              const stamp = `${yyyy}${mm}${dd}`;
+              const nome = `dejt-${numTribunal || '15'}-${stamp}-${Date.now()}.pdf`;
+              const p = path.join(PDF_DIR, nome);
+              await fsp.writeFile(p, Buffer.from(ab));
+              pdfSaved = true;
+              pdfFile = nome;
+              urlPdf = `${BASE_URL}/pdf/${nome}`;
+            }
           }
         } catch (e) {
-          reason = "falha-buffer: " + (e?.message || e);
+          reason = `refetch-error: ${String(e?.message || e)}`;
         }
       } else {
         reason = "sem-response-pdf";
       }
+    } else {
+      reason = "link-inexistente";
     }
 
-    const out = {
+    await browser.close();
+
+    res.json({
       ok: true,
       data: dataPt,
       linkInfo,
-      responses: responses.slice(-10).map(r => ({
-        url: r.url,
-        status: r.status,
-        contentType: r.contentType
-      })),
+      responses: responsesMeta.slice(-20),
       newPages,
       pdf_saved: pdfSaved,
       pdf_file: pdfFile,
-      url_pdf: pdfSaved ? `${BASE_URL}/pdf/${pdfFile}` : null,
+      url_pdf: urlPdf,
       reason,
       logs
-    };
-
-    await browser.close();
-    return res.json(out);
+    });
 
   } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
   }
 });
 
-// ===== Debug: caderno (mapa de elementos)
+// Debug: mostra estrutura HTML da área de cadernos
 app.get("/debug/caderno", async (req, res) => {
   const logs = [];
   const log = (m) => { console.log(m); logs.push(m); };
+
   try {
     const tribunais = String(req.query.tribunais || "TRT15");
     const dataParam = req.query.data || null;
@@ -434,17 +450,17 @@ app.get("/debug/caderno", async (req, res) => {
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     });
+
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
 
     await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    await sleep(800);
+    await sleep(1200);
 
-    // Seleciona/Preenche
     await page.evaluate((dataPt) => {
       const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
       for (const r of radios) {
-        if (r.value === "J" || /judici/i.test(r.id || "")) { r.checked = true; r.click(); }
+        if (r.value === "J" || /judici/i.test(r.id || "")) { r.checked = true; r.click(); r.dispatchEvent(new Event("change", { bubbles: true })); }
       }
       const all = Array.from(document.querySelectorAll("input"));
       const ini = all.find(i => /data.?ini/i.test((i.id || "") + (i.name || "")));
@@ -455,16 +471,18 @@ app.get("/debug/caderno", async (req, res) => {
 
     const numTribunal = tribunais.replace(/\D/g, "");
     await page.evaluate((num) => {
-      const selects = document.querySelectorAll("select");
+      const selects = document.querySelectorAll('select');
       for (const sel of selects) {
-        for (const opt of sel.options || []) {
-          const n = (opt.textContent || "").replace(/\D/g, "");
-          if (n === num) { sel.value = opt.value; sel.dispatchEvent(new Event("change", { bubbles: true })); return; }
+        if (sel.options && sel.options.length > 5) {
+          for (const opt of sel.options) {
+            const numOpt = (opt.textContent || "").replace(/\D/g, "");
+            if (numOpt === num) { sel.value = opt.value; sel.dispatchEvent(new Event("change", { bubbles: true })); return; }
+          }
         }
       }
     }, numTribunal);
 
-    await sleep(600);
+    await sleep(800);
     await clickPesquisarReal(page);
     await waitJsfResult(page, 900);
 
@@ -478,7 +496,12 @@ app.get("/debug/caderno", async (req, res) => {
         const tag = el.tagName;
         const id = el.id || "";
         const classe = el.className || "";
-        clicaveis.push({ tag, id, classe: classe.substring(0, 60), texto: texto.substring(0, 80), href: href.substring(0, 200), onclick: onclick.substring(0, 300) });
+        clicaveis.push({ 
+          tag, id, classe: classe.substring(0, 50),
+          texto: texto.substring(0, 80),
+          href: href.substring(0, 200),
+          onclick: onclick.substring(0, 300)
+        });
       });
       const downloads = clicaveis.filter(c => /download|baixar|visualizar|abrir|window\.open/i.test(c.onclick + c.href + c.texto));
       let tableHtml = "";
@@ -487,12 +510,7 @@ app.get("/debug/caderno", async (req, res) => {
           if (!tableHtml || el.outerHTML.length < tableHtml.length) tableHtml = el.outerHTML;
         }
       });
-      return {
-        totalClicaveis: clicaveis.length,
-        downloads,
-        todosClicaveis: clicaveis.slice(0, 30),
-        tableHtml: tableHtml.substring(0, 8000)
-      };
+      return { totalClicaveis: clicaveis.length, downloads, todosClicaveis: clicaveis.slice(0, 30), tableHtml: tableHtml.substring(0, 8000) };
     });
 
     await browser.close();
@@ -502,8 +520,8 @@ app.get("/debug/caderno", async (req, res) => {
   }
 });
 
-// ===== Debug: botão
-app.get("/debug/botao", async (req, res) => {
+// Debug: botão
+app.get("/debug/botao", async (_req, res) => {
   try {
     const browser = await puppeteer.launch({
       headless: "new",
@@ -512,25 +530,28 @@ app.get("/debug/botao", async (req, res) => {
     });
     const page = await browser.newPage();
     await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    await sleep(1000);
-
+    await sleep(1200);
     const info = await page.evaluate(() => {
       const btn = document.getElementById("corpo:formulario:botaoAcaoPesquisar") ||
                   document.querySelector('input[value="Pesquisar"]');
       if (!btn) return { encontrado: false };
       return {
         encontrado: true,
-        id: btn.id, name: btn.name, type: btn.type, value: btn.value,
-        onclick: btn.getAttribute("onclick"), className: btn.className,
+        id: btn.id,
+        name: btn.name,
+        type: btn.type,
+        value: btn.value,
+        onclick: btn.getAttribute("onclick"),
+        className: btn.className,
         temSubmitForm: typeof window.submitForm === "function",
         temMojarra: !!window.mojarra?.ab,
         temPrimeFaces: !!window.PrimeFaces?.ab,
         temA4J: !!window.A4J?.AJAX?.Submit,
         todosBotoes: Array.from(document.querySelectorAll('input[type="submit"], input[type="button"], button'))
-          .slice(0, 10).map(b => ({ id: b.id, value: b.value || b.textContent, onclick: b.getAttribute("onclick")?.substring(0, 200) }))
+          .slice(0, 10)
+          .map(b => ({ id: b.id, value: b.value || b.textContent, onclick: b.getAttribute("onclick")?.substring(0, 200) }))
       };
     });
-
     await browser.close();
     res.json({ ok: true, info });
   } catch (e) {
@@ -538,10 +559,11 @@ app.get("/debug/botao", async (req, res) => {
   }
 });
 
-// ===== Debug: pesquisa (abre caderno se listado)
+// Debug: fluxo de pesquisa
 app.get("/debug/pesquisa", async (req, res) => {
   const logs = [];
   const log = (m) => { console.log(m); logs.push(m); };
+
   try {
     const tribunais = String(req.query.tribunais || "TRT15");
     const dataParam = req.query.data || null;
@@ -559,12 +581,13 @@ app.get("/debug/pesquisa", async (req, res) => {
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     });
+
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
 
     log("[debug] Navegando para DEJT...");
     await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    await sleep(800);
+    await sleep(1200);
 
     log("[debug] Selecionando caderno Judiciário e Disponibilização...");
     await page.evaluate(() => {
@@ -575,25 +598,22 @@ app.get("/debug/pesquisa", async (req, res) => {
         }
       }
       const dispo = radios.find(r =>
-        /disponibiliza/i.test(r.id || "") || /disponibiliza/i.test(r.name || "")
-      );
-      if (dispo) { dispo.checked = true; dispo.dispatchEvent(new Event("change", { bubbles: true })); }
+        /disponibiliza/i.test(r.id || "") ||
+        /disponibiliza/i.test(r.name || "") ||
+        /Disponibiliza/i.test((document.querySelector(`label[for="${r.id}"]`)?.textContent || "")));
+      if (dispo) { dispo.checked = true; dispo.dispatchEvent(new Event("click", { bubbles: true })); dispo.dispatchEvent(new Event("change", { bubbles: true })); }
     });
-    await sleep(300);
+    await sleep(400);
 
     log("[debug] Preenchendo datas...");
     await page.evaluate((dataPt) => {
       function setDate(inp, val) {
         if (!inp) return false;
-        inp.focus();
-        inp.dispatchEvent(new Event("focus", { bubbles: true }));
-        inp.value = "";
-        inp.dispatchEvent(new Event("input", { bubbles: true }));
-        inp.value = val;
-        inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.focus(); inp.dispatchEvent(new Event("focus", { bubbles: true }));
+        inp.value = ""; inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.value = val; inp.dispatchEvent(new Event("input", { bubbles: true }));
         inp.dispatchEvent(new Event("change", { bubbles: true }));
-        inp.blur();
-        inp.dispatchEvent(new Event("blur", { bubbles: true }));
+        inp.blur(); inp.dispatchEvent(new Event("blur", { bubbles: true }));
         return true;
       }
       const all = Array.from(document.querySelectorAll("input"));
@@ -601,29 +621,26 @@ app.get("/debug/pesquisa", async (req, res) => {
       const fim = all.find(i => /data.?fim|dt.?fim/i.test((i.id || "") + (i.name || "")));
       return { ini: setDate(ini, dataPt), fim: setDate(fim, dataPt) };
     }, dataPt);
-    await sleep(300);
+    await sleep(400);
+    log(`[debug] Datas preenchidas: ${JSON.stringify({ dataPt })}`);
 
     log("[debug] Selecionando tribunal...");
     const numTribunal = tribunais.replace(/\D/g, "");
     const selecionouTribunal = await page.evaluate((numTribunal) => {
-      const selects = document.querySelectorAll("select");
+      const selects = document.querySelectorAll('select');
       for (const sel of selects) {
         if (sel.options && sel.options.length > 5) {
           for (const opt of sel.options) {
             const texto = opt.textContent || "";
             const numOpt = texto.replace(/\D/g, "");
-            if (numOpt === numTribunal) {
-              sel.value = opt.value;
-              sel.dispatchEvent(new Event("change", { bubbles: true }));
-              return texto;
-            }
+            if (numOpt === numTribunal) { sel.value = opt.value; sel.dispatchEvent(new Event("change", { bubbles: true })); return texto; }
           }
         }
       }
       return null;
     }, numTribunal);
     log(`[debug] Tribunal selecionado: ${selecionouTribunal}`);
-    await sleep(600);
+    await sleep(800);
 
     log("[debug] Disparando pesquisa com clique real...");
     const beforeLen = await page.evaluate(() => document.body.innerText.length);
@@ -655,6 +672,16 @@ app.get("/debug/pesquisa", async (req, res) => {
       log(`[debug] Body após abrir caderno: ${afterLen} chars`);
     }
 
+    if (afterLen < 3000 && !temCaderno) {
+      log("[debug] Body ainda pequeno, tentando novamente com clique real...");
+      try { await page.keyboard.press('Enter'); await sleep(400); } catch {}
+      const before2 = afterLen;
+      await clickPesquisarReal(page);
+      await waitJsfResult(page, before2);
+      afterLen = await page.evaluate(() => document.body.innerText.length);
+      log(`[debug] Body após segundo disparo: ${afterLen} chars`);
+    }
+
     const resultado = await page.evaluate(() => {
       const body = document.body.innerText || "";
       const links = [];
@@ -663,24 +690,26 @@ app.get("/debug/pesquisa", async (req, res) => {
         const href = a.getAttribute("href") || "";
         if (texto || href) links.push({ texto: texto.substring(0, 80), href: href.substring(0, 300) });
       });
+
       const linksAto = [];
       document.querySelectorAll("a").forEach(a => {
         const t = (a.textContent || "").toLowerCase();
         const h = (a.getAttribute("href") || "").toLowerCase();
         const oc = (a.getAttribute("onclick") || "").toLowerCase();
         if (
-          t.includes("visualizar") || t.includes("inteiro teor") ||
+          t.includes("visualizar") || t.includes("inteiro teor") || 
           t.includes("conteúdo") || t.includes("conteudo") ||
           h.includes("visualizar") || h.includes("inteiro") || h.includes("conteudo") ||
           h.includes("teor") || oc.includes("window.open")
         ) {
-          linksAto.push({
-            texto: (a.textContent || "").substring(0, 50),
-            href: a.getAttribute("href") || "",
-            onclick: (a.getAttribute("onclick") || "").substring(0, 100)
+          linksAto.push({ 
+            texto: (a.textContent || "").substring(0, 50), 
+            href: a.getAttribute("href") || "", 
+            onclick: (a.getAttribute("onclick") || "").substring(0, 100) 
           });
         }
       });
+
       return {
         tamanhoBody: body.length,
         temAlvara: /alvar[aá]/i.test(body),
@@ -692,6 +721,9 @@ app.get("/debug/pesquisa", async (req, res) => {
       };
     });
 
+    log(`[debug] Body final: ${resultado.tamanhoBody} chars, alvará: ${resultado.temAlvara}, processo: ${resultado.temProcesso}`);
+    log(`[debug] Links de ato: ${resultado.linksAto.length}`);
+
     await browser.close();
     res.json({ ok: true, data: dataPt, tribunais, resultado, logs });
   } catch (e) {
@@ -699,7 +731,7 @@ app.get("/debug/pesquisa", async (req, res) => {
   }
 });
 
-// ===== /scan (miner)
+// ===== MINERADOR PRINCIPAL
 async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   if (DEMO) return { items: [], registrosBrutos: [], totalBruto: 0, discards: {} };
 
@@ -719,6 +751,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   });
+
   const page = await browser.newPage();
   await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
   await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
@@ -726,10 +759,8 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
   page.setDefaultTimeout(30000);
 
   await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
-  await sleep(1000);
-  log("[miner] Página DEJT carregada");
+  await sleep(2000);
 
-  // Seleções iniciais
   await page.evaluate(() => {
     const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
     for (const r of radios) {
@@ -737,10 +768,15 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
         r.checked = true; r.click(); r.dispatchEvent(new Event("change", { bubbles: true }));
       }
     }
+    const dispo = radios.find(r =>
+      /disponibiliza/i.test(r.id || "") || 
+      /disponibiliza/i.test(r.name || "") || 
+      /Disponibiliza/i.test((document.querySelector(`label[for="${r.id}"]`)?.textContent || "")));
+    if (dispo) { dispo.checked = true; dispo.dispatchEvent(new Event("click", { bubbles: true })); dispo.dispatchEvent(new Event("change", { bubbles: true })); }
   });
-  await sleep(200);
+  await sleep(600);
 
-  await page.evaluate((dataPt) => {
+  const preencheuDatas = await page.evaluate((dataPt) => {
     function setDate(inp, val) {
       if (!inp) return false;
       inp.focus(); inp.dispatchEvent(new Event("focus", { bubbles: true }));
@@ -755,7 +791,10 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     const fim = all.find(i => /data.?fim|dt.?fim/i.test((i.id || "") + (i.name || "")));
     return { ini: setDate(ini, dataPt), fim: setDate(fim, dataPt) };
   }, dataPt);
-  await sleep(300);
+  await sleep(600);
+  log(`[miner] Datas preenchidas: ${JSON.stringify(preencheuDatas)}`);
+
+  const norm = (s) => String(s || "").toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
 
   const orgaosDisponiveis = await page.evaluate(() => {
     const seletores = [
@@ -764,36 +803,36 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       'select[name*="Tribunal"]', 'select[id*="Tribunal"]'
     ];
     let sel = null;
-    for (const s of seletores) {
-      sel = document.querySelector(s);
-      if (sel?.options?.length > 1) break;
+    for (const seletor of seletores) {
+      sel = document.querySelector(seletor);
+      if (sel && sel.options && sel.options.length > 1) break;
     }
-    if (!sel) {
-      for (const s of document.querySelectorAll("select")) {
-        if (s?.options?.length > 5) { sel = s; break; }
-      }
+    if (!sel || !sel.options || sel.options.length <= 1) {
+      const allSelects = document.querySelectorAll("select");
+      for (const s of allSelects) { if (s.options && s.options.length > 5) { sel = s; break; } }
     }
     if (!sel) return [];
-    return Array.from(sel.options || []).map(o => ({ value: o.value, label: (o.textContent || "").trim() }));
+    return Array.from(sel.options || []).map((o) => ({ value: o.value, label: (o.textContent || "").trim() }));
   });
 
-  const norm = (s) => String(s || "").toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
-  const mapDisp = orgaosDisponiveis.map(o => ({ value: o.value, code: norm(o.label), label: o.label }));
+  log(`[miner] Órgãos disponíveis: ${orgaosDisponiveis.length}`);
+
+  const mapDisp = orgaosDisponiveis.map((o) => ({ value: o.value, code: norm(o.label), label: o.label }));
 
   const tribunaisRaw = String(tribunais || SCAN_TRIBUNAIS || "TRT15").trim();
   let lista;
   if (/^(ALL|\*|TRT\*)$/i.test(tribunaisRaw)) {
-    lista = mapDisp.filter(o => /^TRT\d+$/i.test(o.code)).map(o => o.code);
+    lista = mapDisp.filter((o) => /^TRT\d+$/i.test(o.code)).map((o) => o.code);
   } else {
     const pedidos = tribunaisRaw.split(/\s*,\s*/).filter(Boolean).map(norm);
-    const setDisp = new Set(mapDisp.map(o => o.code));
-    lista = pedidos.filter(p => setDisp.has(p));
+    const setDisp = new Set(mapDisp.map((o) => o.code));
+    lista = pedidos.filter((p) => setDisp.has(p));
   }
-  if (!lista?.length && mapDisp.length) {
+  if (!lista.length && mapDisp.length > 0) {
     const primeiro = mapDisp.find(o => /^TRT\d+$/i.test(o.code));
     if (primeiro) lista = [primeiro.code];
   }
-  if (!lista?.length) lista = ["TRT15"];
+  if (!lista.length) lista = ["TRT15"];
 
   log(`[miner] Tribunais a varrer: ${lista.join(", ")}`);
 
@@ -805,27 +844,25 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     if (outItems.length >= limit) break;
 
     log(`[miner] Processando ${orgao}...`);
+
     const selecionou = await page.evaluate((orgao) => {
       const seletores = [
         'select[name*="tribunal"]', 'select[id*="tribunal"]',
         'select[name*="orgao"]', 'select[id*="orgao"]'
       ];
       let sel = null;
-      for (const s of seletores) {
-        sel = document.querySelector(s);
-        if (sel?.options?.length > 1) break;
+      for (const seletor of seletores) {
+        sel = document.querySelector(seletor);
+        if (sel && sel.options && sel.options.length > 1) break;
       }
       if (!sel) {
-        for (const s of document.querySelectorAll("select")) {
-          if (s?.options?.length > 5) { sel = s; break; }
-        }
+        const allSelects = document.querySelectorAll("select");
+        for (const s of allSelects) { if (s.options && s.options.length > 5) { sel = s; break; } }
       }
       if (!sel) return { ok: false, reason: "select não encontrado" };
-
       const numPedido = String(orgao).replace(/\D/g, "");
-      const alvo = Array.from(sel.options || []).find(o => (o.textContent || "").replace(/\D/g, "") === numPedido);
+      const alvo = Array.from(sel.options || []).find((o) => (o.textContent || "").replace(/\D/g, "") === numPedido);
       if (!alvo) return { ok: false, reason: `opção com número ${numPedido} não encontrada` };
-
       sel.value = alvo.value;
       sel.dispatchEvent(new Event("change", { bubbles: true }));
       return { ok: true, selecionado: alvo.textContent };
@@ -833,7 +870,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
     if (!selecionou.ok) { log(`[miner] Não conseguiu selecionar ${orgao}: ${selecionou.reason}`); continue; }
     log(`[miner] Selecionado: ${selecionou.selecionado}`);
-    await sleep(600);
+    await sleep(900);
 
     try {
       log(`[miner] Disparando pesquisa com clique real...`);
@@ -845,7 +882,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       log(`[miner] Body: antes=${beforeLen}, depois=${afterLen}`);
       if (afterLen < 3000) {
         log(`[miner] Body pequeno, tentando novamente...`);
-        try { await page.keyboard.press("Enter"); await sleep(300); } catch {}
+        try { await page.keyboard.press('Enter'); await sleep(400); } catch {}
         const before2 = afterLen;
         await clickPesquisarReal(page);
         await waitJsfResult(page, before2);
@@ -872,18 +909,8 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       const howCad = await openFirstCaderno(page, browser);
       log(`[miner] Abriu caderno: ${howCad}`);
       await waitCadernoLoaded(page);
-      const afterCaderno = await page.evaluate(() => {
-        const body = document.body.innerText || "";
-        return {
-          temAlvara: /alvar[aá]/i.test(body),
-          temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
-          tamanhoBody: body.length
-        };
-      });
-      log(`[miner] Após abrir caderno: alvará=${afterCaderno.temAlvara}, processo=${afterCaderno.temProcesso}, tam=${afterCaderno.tamanhoBody}`);
     }
 
-    // Coleta links de atos (melhor esforço)
     const linksAtos = await page.evaluate(() => {
       const links = new Set();
       document.querySelectorAll("a").forEach((a) => {
@@ -897,7 +924,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
             links.add(href.startsWith("http") ? href : (href.startsWith("/") ? "https://dejt.jt.jus.br" + href : href));
           }
         }
-        if (href && href.includes("dejt.jt.jus.br") && !href.includes("diariocon")) links.add(href);
+        if (href.includes("dejt.jt.jus.br") && !href.includes("diariocon")) links.add(href);
       });
       document.querySelectorAll("[onclick]").forEach((el) => {
         const onclick = el.getAttribute("onclick") || "";
@@ -918,15 +945,13 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
     log(`[miner] ${orgao}: encontrados ${linksAtos.length} links de atos`);
 
-    if (linksAtos.length === 0) {
+    if (!linksAtos.length) {
       for (const frame of page.frames()) {
         if (frame === page.mainFrame()) continue;
         try {
           const frameLinks = await frame.evaluate(() => {
             const links = [];
-            document.querySelectorAll("a").forEach((a) => {
-              if (a.href && !a.href.startsWith("javascript:void")) links.push(a.href);
-            });
+            document.querySelectorAll("a").forEach((a) => { if (a.href && !a.href.startsWith("javascript:void")) links.push(a.href); });
             return links;
           });
           linksAtos.push(...frameLinks);
@@ -938,7 +963,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     for (const href of linksAtos) {
       if (outItems.length >= limit) break;
       try {
-        log(`[miner] Abrindo: ${href.substring(0, 100)}...`);
+        log(`[miner] Abrindo: ${href.substring(0, 80)}...`);
         const pg = await browser.newPage();
         pg.setDefaultTimeout(15000);
         await pg.goto(href, { waitUntil: "domcontentloaded", timeout: 15000 });
@@ -953,7 +978,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
         const processo = procs[0] || "";
         if (!processo) { discards.sem_processo++; continue; }
 
-        let valorCents = NaN, m;
+        let valorCents = NaN; let m;
         while ((m = RX_MOEDA.exec(conteudo))) {
           const cents = brlToCents(m[1]);
           if (!Number.isFinite(valorCents) || cents > valorCents) valorCents = cents;
@@ -964,6 +989,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
         if (!pf_nome) { discards.sem_pf++; continue; }
 
         log(`[miner] ✓ Encontrado: ${pf_nome} - ${centavosToBRL(valorCents)}`);
+
         outItems.push({
           tribunal: orgao,
           vara: "",
@@ -976,6 +1002,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
           id_ato: href,
           link_oficial: href,
         });
+
       } catch (e) {
         log(`[miner] Erro ao processar link: ${e.message}`);
         discards.erro_pagina++;
@@ -983,13 +1010,21 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     }
   }
 
-  await browser.close();
+  // fecha browser
+  try { await browser.close(); } catch {}
+
   log(`[miner] Finalizado: ${outItems.length} itens encontrados`);
 
-  return { items: outItems, registrosBrutos, totalBruto: registrosBrutos.length, discards, logs };
+  return {
+    items: outItems,
+    registrosBrutos,
+    totalBruto: registrosBrutos.length,
+    discards,
+    logs
+  };
 }
 
-// /scan
+// ===== /scan
 app.get("/scan", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 60), 120);
@@ -997,7 +1032,11 @@ app.get("/scan", async (req, res) => {
     const data = req.query.data || null;
     const wantDebug = String(req.query.debug || "0") === "1";
 
-    const { items: brutos, registrosBrutos, totalBruto, discards, logs } = await scanMiner({ limit, tribunais, data });
+    const { items: brutos, registrosBrutos, totalBruto, discards, logs } = await scanMiner({
+      limit,
+      tribunais,
+      data,
+    });
 
     const filtrados = brutos.filter((c) => {
       const cents = Number(c.valor_centavos);
@@ -1008,8 +1047,11 @@ app.get("/scan", async (req, res) => {
 
     if (wantDebug) {
       return res.json({
-        ok: true, data, tribunais,
-        total_bruto: totalBruto, total_filtrado: filtrados.length,
+        ok: true,
+        data,
+        tribunais,
+        total_bruto: totalBruto,
+        total_filtrado: filtrados.length,
         amostras_brutas: registrosBrutos.slice(0, 10),
         contadores_descartes: discards,
         itens_filtrados_preview: filtrados.slice(0, 5),
@@ -1019,11 +1061,12 @@ app.get("/scan", async (req, res) => {
 
     res.json({ ok: true, items: filtrados.slice(0, limit) });
   } catch (e) {
+    console.error("Erro /scan:", e);
     res.status(500).json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
   }
 });
 
-// /relatorio (gera PDF consolidado)
+// ===== /relatorio
 app.get("/relatorio", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 15), 50);
@@ -1031,7 +1074,11 @@ app.get("/relatorio", async (req, res) => {
     const tribunais = String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15");
     const wantDebug = String(req.query.debug || "0") === "1";
 
-    const { items: brutos, registrosBrutos, totalBruto, discards, logs } = await scanMiner({ limit: limit * 3, tribunais, data });
+    const { items: brutos, registrosBrutos, totalBruto, discards, logs } = await scanMiner({
+      limit: limit * 3,
+      tribunais,
+      data,
+    });
 
     const filtrados = brutos
       .filter((c) => {
@@ -1044,8 +1091,11 @@ app.get("/relatorio", async (req, res) => {
 
     if (wantDebug) {
       return res.json({
-        ok: true, data, tribunais,
-        total_bruto: totalBruto, total_filtrado: filtrados.length,
+        ok: true,
+        data,
+        tribunais,
+        total_bruto: totalBruto,
+        total_filtrado: filtrados.length,
         contadores_descartes: discards,
         amostras_brutas: registrosBrutos.slice(0, 10),
         itens_filtrados_preview: filtrados.slice(0, 5),
@@ -1071,9 +1121,12 @@ app.get("/relatorio", async (req, res) => {
         <td>${safe(c.tipo_ato || "e-Alvará")}</td>
         <td>${centavosToBRL(c.valor_centavos)}</td>
         <td><a href="${safe(c.link_oficial || c.id_ato || "#")}">ato</a></td>
-      </tr>`).join("");
+      </tr>`
+    ).join("");
 
-    const dataLabel = data ? new Date(data).toLocaleDateString("pt-BR") : new Date().toLocaleDateString("pt-BR");
+    const dataLabel = data
+      ? new Date(data).toLocaleDateString("pt-BR")
+      : new Date().toLocaleDateString("pt-BR");
 
     const html = `<!doctype html><html lang="pt-br"><meta charset="utf-8">
 <title>Dossiê Consolidado — ${filtrados.length} casos</title>
@@ -1125,11 +1178,12 @@ app.get("/relatorio", async (req, res) => {
       })),
     });
   } catch (e) {
+    console.error("Erro /relatorio:", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// /gerar-dossie
+// ===== /gerar-dossie
 app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   try {
     const {
@@ -1147,10 +1201,14 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
     const atoPronto = RX_ALVAR.test(String(tipo_ato || ""));
 
     if (!tribunal || !processo || !isPF || !hasTicket || !atoPronto) {
-      return res.status(400).json({ ok: false, error: "Regras TORRE: PF nominal, ticket ≥ R$ 20k e ato pronto." });
+      return res.status(400).json({
+        ok: false,
+        error: "Regras TORRE: PF nominal, ticket ≥ R$ 20k e ato pronto.",
+      });
     }
 
     const valorBRL = centavosToBRL(cents);
+
     const html = await renderFromTemplate({
       tribunal: safe(tribunal),
       vara: safe(vara || ""),
@@ -1162,7 +1220,7 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       banco_pagador: safe(banco_pagador || "BB/CEF"),
       id_ato: safe(id_ato || link_oficial || ""),
       fee_percent: safe(fee_percent || "10–20"),
-      link_oficial: safe(link_oficial || "")
+      link_oficial: safe(link_oficial || ""),
     });
 
     const fileName = `dossie-${Date.now()}.pdf`;
@@ -1186,7 +1244,7 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
     lastPdfFile = fileName;
 
     const pitch = `${pf_nome}, no ${tribunal} proc. ${processo} há ${tipo_ato || "e-Alvará"} de ${valorBRL} em seu nome.\nTe guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
-
+    
     return res.json({
       ok: true,
       url: `${BASE_URL}/pdf/${fileName}`,
@@ -1195,11 +1253,12 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       file: fileName,
     });
   } catch (e) {
+    console.error("Erro /gerar-dossie:", e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// /batch
+// ===== /batch
 app.post("/batch", async (req, res) => {
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -1207,7 +1266,7 @@ app.post("/batch", async (req, res) => {
 
     const limit = pLimit(CONCURRENCY);
     const results = [];
-
+    
     for (const body of items) {
       const run = async () => {
         try {
@@ -1223,7 +1282,7 @@ app.post("/batch", async (req, res) => {
       };
       results.push(limit(run));
     }
-
+    
     const out = await Promise.all(results);
 
     const csvName = `lote-${Date.now()}.csv`;
@@ -1248,13 +1307,18 @@ app.post("/batch", async (req, res) => {
     }
     await fsp.writeFile(csvPath, lines.join("\n"), "utf8");
 
-    return res.json({ ok: true, items: out, csv: `${BASE_URL}/exports/${csvName}` });
+    return res.json({
+      ok: true,
+      items: out,
+      csv: `${BASE_URL}/exports/${csvName}`,
+    });
   } catch (e) {
+    console.error("Erro /batch:", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// /pack
+// ===== /pack
 app.post("/pack", async (req, res) => {
   try {
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
@@ -1271,17 +1335,18 @@ app.post("/pack", async (req, res) => {
       const p = path.join(PDF_DIR, path.basename(f));
       if (fs.existsSync(p)) archive.file(p, { name: path.basename(p) });
     }
-
+    
     await archive.finalize();
     await new Promise((resolve) => output.on("close", resolve));
-
+    
     res.json({ ok: true, zip: `${BASE_URL}/exports/${zipName}` });
   } catch (e) {
+    console.error("Erro /pack:", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// Utils finais
+// ===== Utils
 app.get("/pdf/proposta.pdf", (_req, res) => {
   if (!lastPdfFile) return res.status(404).send("PDF ainda não gerado.");
   return res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
@@ -1295,7 +1360,7 @@ app.get("/debug/last", (_req, res) => {
   });
 });
 
-// Start
+// ===== Start
 app.listen(PORT, () => console.log(`TORRE v5.1 rodando na porta ${PORT}`));
 
 process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
