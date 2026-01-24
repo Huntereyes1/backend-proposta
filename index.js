@@ -409,24 +409,31 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
         }
       }
       
-      if (!sel) return false;
+      if (!sel) return { ok: false, reason: "select não encontrado" };
       
-      const normaliza = (str) => String(str || "").toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1").trim();
-      const alvo = Array.from(sel.options || []).find(
-        (o) => normaliza(o.textContent) === orgao.toUpperCase()
-      );
+      // Extrai o número do tribunal pedido (ex: "TRT15" -> "15", "TRT2" -> "2")
+      const numPedido = String(orgao).replace(/\D/g, "");
       
-      if (!alvo) return false;
+      // Busca opção que contenha esse número
+      const alvo = Array.from(sel.options || []).find((o) => {
+        const texto = String(o.textContent || "");
+        const numOpcao = texto.replace(/\D/g, ""); // extrai só números
+        return numOpcao === numPedido;
+      });
+      
+      if (!alvo) return { ok: false, reason: `opção com número ${numPedido} não encontrada` };
       
       sel.value = alvo.value;
       sel.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
+      return { ok: true, selecionado: alvo.textContent };
     }, orgao);
 
-    if (!selecionou) {
-      log(`[miner] Não conseguiu selecionar ${orgao}`);
+    if (!selecionou.ok) {
+      log(`[miner] Não conseguiu selecionar ${orgao}: ${selecionou.reason}`);
       continue;
     }
+    
+    log(`[miner] Selecionado: ${selecionou.selecionado}`);
 
     await sleep(1000);
 
