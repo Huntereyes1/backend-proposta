@@ -1,5 +1,5 @@
-// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.3, DEJT real + debug)
-// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last
+// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.4, DEJT real + probe)
+// Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last, /debug/probe
 
 import express from "express";
 import cors from "cors";
@@ -59,12 +59,101 @@ app.use(
 
 app.get("/", (_req, res) =>
   res.send(
-    "Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.3 — DEJT real + debug"
+    "Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.4 — DEJT real + probe"
   )
 );
 app.get("/health", (_req, res) =>
   res.json({ ok: true, now: new Date().toISOString() })
 );
+
+// ===== /debug/probe — executa até após "Pesquisar" e devolve HTML (recorte) + opções do select
+app.get("/debug/probe", async (req, res) => {
+  try {
+    const data = String(req.query.data || "");
+    const tribunais = String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15");
+
+    const d = data ? new Date(data) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    const page = await browser.newPage();
+    await page.goto(
+      "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y",
+      { waitUntil: "domcontentloaded" }
+    );
+
+    // datas
+    await page.evaluate((dataPt) => {
+      const ini = document.querySelector('input[name="dataIni"], #dataIni');
+      const fim = document.querySelector('input[name="dataFim"], #dataFim');
+      if (ini) ini.value = dataPt;
+      if (fim) fim.value = dataPt;
+    }, dataPt);
+
+    // opções do select
+    const opts = await page.evaluate(() => {
+      const sel =
+        document.querySelector(
+          'select[name="tribunal"], #orgaos, #tribunal, select[name="orgao"]'
+        ) || null;
+      if (!sel) return [];
+      return Array.from(sel.options || []).map((o) => ({
+        value: o.value,
+        label: (o.textContent || "").trim(),
+      }));
+    });
+
+    // escolhe primeiro órgão dos pedidos (ou TRT15)
+    const alvoCode = String(tribunais).split(",")[0] || "TRT15";
+    await page.evaluate((alvoCode) => {
+      const norm = (s = "") =>
+        s.toUpperCase().replace(/\s+/g, " ").replace(/TRT\s*(\d+).*/i, "TRT$1");
+      const sel =
+        document.querySelector(
+          'select[name="tribunal"], #orgaos, #tribunal, select[name="orgao"]'
+        ) || null;
+      if (!sel) return false;
+      const opt = Array.from(sel.options || []).find(
+        (o) => norm(o.textContent || "") === alvoCode.toUpperCase()
+      );
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change"));
+      return true;
+    }, alvoCode);
+
+    // clica pesquisar
+    try {
+      await Promise.all([
+        page.click(
+          'input[type="submit"][value="Pesquisar"], #btnPesquisar, button'
+        ),
+        page.waitForNetworkIdle({ idleTime: 800, timeout: 30000 }),
+      ]);
+    } catch {}
+
+    const html = await page.content();
+    await browser.close();
+
+    res.json({
+      ok: true,
+      orgaos: opts,
+      sample: html.slice(0, 120000), // 120k chars p/ inspecionar
+      len: html.length,
+      note:
+        "Procure por 'Visualizar', 'Inteiro Teor', 'Conteúdo', 'Exibir', 'Abrir'.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
 
 // ===== Utils =====
 const toNumber = (v) =>
@@ -290,37 +379,69 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       ]);
     } catch {}
 
-    // 4) Coleta “Visualizar Texto/Conteúdo” — pega href OU onclick javascript
-    const linksTexto = await page.evaluate(() => {
-      const out = [];
-      const isViz = (el) => {
-        const t = (el.textContent || el.value || "").trim();
-        return /Visualizar\s*(Texto|Conte[uú]do)?/i.test(t);
-      };
-      const takeUrl = (el) => {
-        let href =
-          el.href || el.getAttribute("data-href") || el.getAttribute("onclick") || "";
-        if (!href) return "";
-        if (href.startsWith("javascript:")) {
-          const m = href.match(/'(https?:[^']+)'/);
-          if (m) href = m[1];
-        }
-        return href;
-      };
-      document
-        .querySelectorAll("a,button,input[type=button],input[type=submit]")
-        .forEach((el) => {
-          if (!isViz(el)) return;
-          const url = takeUrl(el);
-          if (url) out.push(url);
+    // 4) Coleta links “Visualizar/Inteiro Teor/Conteúdo/Exibir/Abrir”
+    async function _collectVisualLinksFrom(frame) {
+      return frame.evaluate(() => {
+        const out = [];
+        const labelHit = (el) => {
+          const t = (el.textContent || el.value || "").trim();
+          return /(Visualizar|Inteiro\s*Teor|Conte[uú]do|Exibir|Abrir)/i.test(t);
+        };
+        const takeUrl = (el) => {
+          let href =
+            el.href ||
+            el.getAttribute?.("data-href") ||
+            el.getAttribute?.("onclick") ||
+            "";
+          if (!href) return "";
+          if (href.startsWith("javascript:")) {
+            const m = href.match(/'(https?:[^']+)'/);
+            if (m) href = m[1];
+          }
+          return href;
+        };
+
+        // anchors/botões/inputs com rótulo útil
+        document
+          .querySelectorAll("a,button,input[type=button],input[type=submit]")
+          .forEach((el) => {
+            if (!labelHit(el)) return;
+            const url = takeUrl(el);
+            if (url) out.push(url);
+          });
+
+        // fallback: qualquer <a> que aponte pro domínio do DEJT
+        document.querySelectorAll("a[href]").forEach((a) => {
+          const href = a.getAttribute("href") || "";
+          if (/dejt\.jt\.jus\.br/i.test(href)) out.push(a.href || href);
         });
-      return Array.from(new Set(out));
-    });
+
+        return Array.from(new Set(out));
+      });
+    }
+
+    let linksTexto = [];
+    try {
+      linksTexto = await _collectVisualLinksFrom(page);
+    } catch {}
+
+    if (!linksTexto.length) {
+      const frames = page.frames();
+      for (const fr of frames) {
+        try {
+          const got = await _collectVisualLinksFrom(fr);
+          if (got?.length) {
+            linksTexto = got;
+            break;
+          }
+        } catch {}
+      }
+    }
 
     if (!linksTexto.length) {
       // debug de “nada encontrado” para este órgão
       registrosBrutos.push({
-        href: `(nenhum link 'Visualizar' para ${orgao})`,
+        href: `(sem links 'Visualizar/Inteiro Teor' p/ ${orgao})`,
         tam: 0,
       });
       continue;
