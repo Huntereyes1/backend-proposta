@@ -127,6 +127,125 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// Debug: testa o fluxo de pesquisa e mostra o HTML resultante
+app.get("/debug/pesquisa", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunais = String(req.query.tribunais || "TRT15");
+    const dataParam = req.query.data || null;
+    
+    const d = dataParam ? new Date(dataParam) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+    
+    log(`[debug] Iniciando pesquisa para ${tribunais} em ${dataPt}`);
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
+    
+    log("[debug] Navegando para DEJT...");
+    await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await sleep(2000);
+    
+    // Preenche datas
+    log("[debug] Preenchendo datas...");
+    await page.evaluate((dataPt) => {
+      const inputs = document.querySelectorAll('input');
+      inputs.forEach(inp => {
+        const id = (inp.id || "").toLowerCase();
+        const name = (inp.name || "").toLowerCase();
+        if (id.includes("dataini") || name.includes("dataini") || id.includes("dtini")) {
+          inp.value = dataPt;
+          inp.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        if (id.includes("datafim") || name.includes("datafim") || id.includes("dtfim")) {
+          inp.value = dataPt;
+          inp.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
+    }, dataPt);
+    
+    // Seleciona tribunal
+    log("[debug] Selecionando tribunal...");
+    const numTribunal = tribunais.replace(/\D/g, "");
+    await page.evaluate((numTribunal) => {
+      const selects = document.querySelectorAll('select');
+      for (const sel of selects) {
+        if (sel.options && sel.options.length > 5) {
+          for (const opt of sel.options) {
+            const numOpt = (opt.textContent || "").replace(/\D/g, "");
+            if (numOpt === numTribunal) {
+              sel.value = opt.value;
+              sel.dispatchEvent(new Event("change", { bubbles: true }));
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    }, numTribunal);
+    
+    await sleep(1000);
+    
+    // Clica em Pesquisar
+    log("[debug] Clicando em Pesquisar...");
+    await page.evaluate(() => {
+      const btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]') ||
+                  document.querySelector('input[value*="Pesquisar" i]');
+      if (btn) btn.click();
+    });
+    
+    // Espera Ajax
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
+    await sleep(3000);
+    
+    // Captura resultado
+    const resultado = await page.evaluate(() => {
+      const body = document.body.innerText || "";
+      const links = [];
+      document.querySelectorAll("a").forEach(a => {
+        const texto = (a.textContent || "").trim().substring(0, 50);
+        const href = (a.href || "").substring(0, 100);
+        if (texto || href) links.push({ texto, href });
+      });
+      
+      return {
+        tamanhoBody: body.length,
+        temAlvara: /alvar[aá]/i.test(body),
+        temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
+        trechoBody: body.substring(0, 2000),
+        totalLinks: links.length,
+        primeirosLinks: links.slice(0, 20)
+      };
+    });
+    
+    log(`[debug] Body: ${resultado.tamanhoBody} chars, alvará: ${resultado.temAlvara}, processo: ${resultado.temProcesso}`);
+    
+    await browser.close();
+    
+    res.json({
+      ok: true,
+      data: dataPt,
+      tribunais,
+      resultado,
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // Probe melhorado para diagnóstico
 app.get("/debug/probe", async (req, res) => {
   const logs = [];
@@ -442,23 +561,27 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       log(`[miner] Clicando em Pesquisar...`);
       
       const clicouPesquisar = await page.evaluate(() => {
-        // Tenta pelo ID específico do DEJT
-        const btnById = document.querySelector('#corpo\\:formulario\\:botaoAcaoPesquisar');
+        // Tenta pelo ID específico do DEJT (escape de : para CSS)
+        const btnById = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]');
         if (btnById) {
           btnById.click();
           return "botaoAcaoPesquisar";
         }
         
-        // Tenta por name
-        const btnByName = document.querySelector('[name*="botaoAcaoPesquisar"]');
-        if (btnByName) {
-          btnByName.click();
-          return "by name";
+        // Tenta por ID parcial
+        const allBtns = document.querySelectorAll('input[type="button"], input[type="submit"], button');
+        for (const btn of allBtns) {
+          const id = btn.id || "";
+          const name = btn.name || "";
+          const value = (btn.value || "").toLowerCase();
+          if (id.includes("Pesquisar") || name.includes("Pesquisar") || value.includes("pesquisar")) {
+            btn.click();
+            return "encontrado por id/name/value: " + (id || name || value);
+          }
         }
         
-        // Busca botão com texto "Pesquisar"
-        const btns = document.querySelectorAll('input[type="submit"], button, input[type="button"]');
-        for (const btn of btns) {
+        // Busca por texto
+        for (const btn of allBtns) {
           const texto = (btn.value || btn.textContent || "").toLowerCase();
           if (texto.includes("pesquis")) {
             btn.click();
@@ -466,21 +589,31 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
           }
         }
         
-        // Último fallback: primeiro submit
-        const submit = document.querySelector('input[type="submit"]');
-        if (submit) { 
-          submit.click(); 
-          return "fallback submit";
-        }
-        
         return null;
       });
       
       log(`[miner] Clique: ${clicouPesquisar || "não encontrou botão"}`);
       
-      // Espera a página carregar os resultados
-      await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {});
+      // Para JSF/Ajax: espera a rede ficar idle (não navegação)
+      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
       await sleep(3000);
+      
+      // Verifica se a página mudou (JSF pode ter atualizado via Ajax)
+      const bodyLength = await page.evaluate(() => document.body.innerText.length);
+      log(`[miner] Tamanho do body após pesquisa: ${bodyLength}`);
+      
+      // Se body ainda pequeno, tenta clicar novamente
+      if (bodyLength < 2000) {
+        log(`[miner] Body pequeno, tentando clicar novamente...`);
+        await page.evaluate(() => {
+          const btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]') ||
+                      document.querySelector('input[value*="Pesquisar" i]') ||
+                      document.querySelector('button');
+          if (btn) btn.click();
+        });
+        await page.waitForNetworkIdle({ idleTime: 2000, timeout: 20000 }).catch(() => {});
+        await sleep(2000);
+      }
       
     } catch (e) {
       log(`[miner] Erro ao pesquisar: ${e.message}`);
@@ -492,10 +625,11 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       return {
         temAlvara: /alvar[aá]/i.test(body),
         temProcesso: /\d{7}-\d{2}\.\d{4}/.test(body),
-        tamanhoBody: body.length
+        tamanhoBody: body.length,
+        trechoBody: body.substring(0, 500)
       };
     });
-    log(`[miner] Resultados na página: ${JSON.stringify(temResultados)}`);
+    log(`[miner] Resultados: alvará=${temResultados.temAlvara}, processo=${temResultados.temProcesso}, tam=${temResultados.tamanhoBody}`);
 
     // Coleta links de atos (Visualizar, Inteiro Teor, etc)
     const linksAtos = await page.evaluate(() => {
