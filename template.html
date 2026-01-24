@@ -19,6 +19,8 @@
     li{margin:4px 0}
     .hr{height:1px;background:#111;margin:16px 0}
     .foot{font-size:11px;line-height:1.45}
+    .qr{width:96px;height:96px;border:1px solid #111;display:block}
+    .right{text-align:right}
   </style>
 </head>
 <body>
@@ -28,7 +30,7 @@
         <div class="muted">TRIBUNAL / VARA</div>
         <h1>{{tribunal}} — {{vara}}</h1>
       </div>
-      <div style="text-align:right">
+      <div class="right">
         <div class="muted">DATA DO ATO</div>
         <div class="mono">{{data_ato}}</div>
       </div>
@@ -39,7 +41,7 @@
         <div class="muted">PROCESSO</div>
         <div class="mono">{{processo}}</div>
       </div>
-      <div style="text-align:right">
+      <div class="right">
         <div class="muted">BENEFICIÁRIO (PF)</div>
         <div class="mono">{{pf_nome}}</div>
       </div>
@@ -50,14 +52,23 @@
 
     <h2>PROVA (VERIFICAÇÃO OFICIAL)</h2>
     <div class="box">
-      <div class="muted">ID/URL DO ATO</div>
-      <div class="mono">{{id_ato}}</div>
-      <div class="hr"></div>
-      <div class="muted">Como verificar:</div>
-      <ul>
-        <li>Acesse o portal do Tribunal (ou pesquise pelo nº do processo).</li>
-        <li>Confirme a <b>expedição de e-Alvará/levantamento</b> e o <b>nome da PF</b>.</li>
-      </ul>
+      <div class="row" style="align-items:center;">
+        <div style="flex:1;">
+          <div class="muted">ID/URL DO ATO</div>
+          <div class="mono">{{id_ato}}</div>
+          <div class="hr"></div>
+          <div class="muted">Como verificar:</div>
+          <ul>
+            <li>Acesse o portal do Tribunal (ou pesquise pelo nº do processo).</li>
+            <li>Confirme a <b>expedição de e-Alvará/levantamento</b> e o <b>nome da PF</b>.</li>
+          </ul>
+        </div>
+        <div>
+          <!-- QR Code gerado no backend quando houver link/id -->
+          <img class="qr" src="{{qrcode_dataurl}}" alt="QR"/>
+          <div class="muted" style="text-align:center;margin-top:4px;">QR do ato</div>
+        </div>
+      </div>
     </div>
 
     <h2>LEVANTAMENTO (BB/CEF)</h2>
@@ -68,7 +79,7 @@
       <ul>
         <li>Levar <b>RG/CPF</b>, <b>nº do processo</b> e <b>código/ID do e-Alvará</b>.</li>
         <li>Agência com <b>tesouraria/gerência</b> agiliza o atendimento.</li>
-        <li>Prazo prático: <b>3–7 dias</b> (alguns casos até 15).</li>
+        <li>Prazo prático: <b>3–7 dias</b> (casos pontuais até 15).</li>
       </ul>
     </div>
 
@@ -84,6 +95,7 @@
     <div class="hr"></div>
     <div class="foot">
       Operação TORRE — Dossiê PF e-Alvará (TRT/TJ). Documento informativo; não há prestação de serviços jurídicos.
+      <br/>Reforço anti-golpe: nunca solicitamos adiantamento. Verifique o ato pelo QR/URL acima.
     </div>
   </div>
 </body>
