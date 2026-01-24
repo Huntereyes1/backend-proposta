@@ -127,6 +127,7 @@ function extractWindowOpenUrl(onclick) {
 }
 
 // Helper: abre o primeiro caderno do tribunal na listagem (PRIORIDADE: VISUALIZAR/TEOR; PDF é fallback)
+// Agora também salva o PDF quando o fallback é acionado (buffer → arquivo).
 async function openFirstCaderno(page, browser) {
   // 1) dentro da mesma linha do resultado, localizar âncora de visualização/teor
   const sel = await page.evaluate(() => {
@@ -196,7 +197,7 @@ async function openFirstCaderno(page, browser) {
     }
   }
 
-  // 3) fallback: aciona download (PDF) e intercepta resposta
+  // 3) fallback: aciona download (PDF), intercepta resposta e SALVA no /pdf
   const pdfResponsePromise = page.waitForResponse(r => {
     const ct = (r.headers()['content-type']||'').toLowerCase();
     return ct.includes('application/pdf');
@@ -213,7 +214,16 @@ async function openFirstCaderno(page, browser) {
 
   const pdfResp = await pdfResponsePromise;
   if (pdfResp) {
-    return 'baixou-PDF (fallback) ' + (pdfResp.url().slice(0,120));
+    try {
+      const buf = await pdfResp.buffer();
+      const fname = `caderno-${Date.now()}.pdf`;
+      const fpath = path.join(PDF_DIR, fname);
+      await fsp.writeFile(fpath, buf);
+      lastPdfFile = fname;
+      return `baixou-PDF (fallback) salvo: ${BASE_URL}/pdf/${fname}`;
+    } catch (e) {
+      return 'baixou-PDF (fallback) mas falhou ao salvar';
+    }
   }
   return 'caderno-não-encontrado';
 }
@@ -372,6 +382,7 @@ app.get("/debug/env", (_req, res) => {
 });
 
 // Debug: testa especificamente o download do caderno
+// Agora salva o PDF em /pdf quando detectar 'application/pdf' na mesma guia.
 app.get("/debug/download", async (req, res) => {
   const logs = [];
   const log = (msg) => { console.log(msg); logs.push(msg); };
@@ -465,17 +476,40 @@ app.get("/debug/download", async (req, res) => {
     });
     log(`[download] Link encontrado: ${JSON.stringify(linkInfo)}`);
     
+    let savedPdf = null;
+
     if (linkInfo) {
       log("[download] Clicando no link de download...");
       
       // Limpa respostas anteriores
       responses.length = 0;
+
+      // Prepare um waitForResponse para pegar o PDF
+      const pdfResponsePromise = page.waitForResponse(r => {
+        const ct = (r.headers()['content-type'] || '').toLowerCase();
+        return ct.includes('application/pdf');
+      }, { timeout: 15000 }).catch(() => null);
       
       // Usa page.click real em vez de eval
       await page.click('a.link-download');
       
-      // Espera respostas
-      await sleep(5000);
+      // Espera resposta PDF
+      const pdfResp = await pdfResponsePromise;
+      if (pdfResp) {
+        try {
+          const buf = await pdfResp.buffer();
+          const fname = `caderno-${Date.now()}.pdf`;
+          const fpath = path.join(PDF_DIR, fname);
+          await fsp.writeFile(fpath, buf);
+          lastPdfFile = fname;
+          savedPdf = `${BASE_URL}/pdf/${fname}`;
+          log(`[download] PDF salvo em ${savedPdf}`);
+        } catch(e) {
+          log(`[download] Falha ao salvar PDF: ${e?.message || e}`);
+        }
+      }
+      
+      // Espera rede ficar ociosa um pouco
       await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
       
       log(`[download] Respostas capturadas: ${responses.length}`);
@@ -494,9 +528,8 @@ app.get("/debug/download", async (req, res) => {
       }
       
       // Verifica se a página atual mudou
-      const currentUrl = page.url();
       const currentBody = await page.evaluate(() => document.body.innerText.length);
-      log(`[download] Página atual: https://dejt.jt.jus.br/dejt/f/n/diariocon, body: ${currentBody}`);
+      log(`[download] Página atual continua sendo o form; body: ${currentBody}`);
     }
     
     await browser.close();
@@ -507,6 +540,7 @@ app.get("/debug/download", async (req, res) => {
       linkInfo,
       responses: responses.slice(-20),
       newPages,
+      savedPdf, // URL pública se salvou
       logs
     });
     
@@ -750,7 +784,7 @@ app.get("/debug/pesquisa", async (req, res) => {
     await sleep(500);
     
     // 2. Preenche datas com eventos completos (focus, input, blur)
-    log("[debug] Preenchendo datas...");
+    log("[debug] Preenchendo datas...]");
     await page.evaluate((dataPt) => {
       function setDate(inp, val) {
         if (!inp) return;
@@ -835,7 +869,6 @@ app.get("/debug/pesquisa", async (req, res) => {
       log("[debug] Caderno encontrado na listagem! Abrindo...");
       
       // Abre o caderno do TRT solicitado
-      const numTribunal = tribunais.replace(/\D/g, '') || '15';
       const howCaderno = await openFirstCaderno(page, browser);
       log(`[debug] Abrindo caderno: ${howCaderno}`);
       
@@ -954,7 +987,7 @@ app.get("/debug/probe", async (req, res) => {
     // Espera extra para JSF carregar
     await sleep(3000);
     
-    log("[probe] Página carregada, buscando select...");
+    log("[probe] Página carregada, buscando select...]");
     
     // Busca todos os selects na página
     const selectInfo = await page.evaluate(() => {
@@ -1294,7 +1327,6 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     // Se encontrou listagem de cadernos, abre o caderno
     if (temResultados.temCaderno) {
       log(`[miner] Caderno encontrado, abrindo...`);
-      const num = String(orgao).replace(/\D/g, '') || '15';
       const howCad = await openFirstCaderno(page, browser);
       log(`[miner] Abriu caderno: ${howCad}`);
       await waitCadernoLoaded(page);
