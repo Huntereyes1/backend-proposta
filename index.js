@@ -127,15 +127,25 @@ function extractWindowOpenUrl(onclick) {
 }
 
 // Helper: abre o primeiro caderno do tribunal na listagem
-async function openFirstCaderno(page, tribunalNumero) {
-  // O link de baixar usa submitForm via onclick, não é um link normal
-  // Precisamos executar o onclick diretamente (removendo "return false")
+async function openFirstCaderno(page, browser) {
+  // O link de baixar usa submitForm via onclick
+  // Isso pode abrir uma nova janela/aba com o PDF
+  // Precisamos capturar essa nova página
   
+  // Configura listener para nova página
+  const newPagePromise = new Promise((resolve) => {
+    browser.once('targetcreated', async (target) => {
+      const newPage = await target.page();
+      resolve(newPage);
+    });
+    // Timeout de 10 segundos
+    setTimeout(() => resolve(null), 10000);
+  });
+  
+  // Executa o clique no link de download
   const resultado = await page.evaluate(() => {
-    // Função para executar onclick de forma segura
     function execOnclick(onclick) {
       if (!onclick) return false;
-      // Remove "return false;" ou "return true;" do final
       const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, '');
       try {
         eval(cleaned);
@@ -146,7 +156,7 @@ async function openFirstCaderno(page, tribunalNumero) {
       }
     }
     
-    // Busca o link com classe "link-download" ou onclick com "plcLogicaItens"
+    // Busca o link com classe "link-download"
     const links = document.querySelectorAll('a.link-download, a[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
     
     if (links.length > 0) {
@@ -154,35 +164,49 @@ async function openFirstCaderno(page, tribunalNumero) {
       const onclick = link.getAttribute('onclick') || '';
       
       if (onclick && execOnclick(onclick)) {
-        return { ok: true, method: 'eval onclick link-download', onclick: onclick.substring(0, 100) };
+        return { ok: true, method: 'eval onclick', onclick: onclick.substring(0, 100) };
       }
       
-      // Fallback: clica no link
       link.click();
-      return { ok: true, method: 'click link-download' };
+      return { ok: true, method: 'click' };
     }
     
-    // Tenta submitForm diretamente se soubermos o source
+    // Fallback: submitForm direto
     if (typeof window.submitForm === 'function') {
       try {
         window.submitForm('corpo:formulario', 1, { source: 'corpo:formulario:plcLogicaItens:0:j_id132' });
         return { ok: true, method: 'submitForm direto' };
       } catch (e) {
-        return { ok: false, error: 'submitForm falhou: ' + e.message };
+        return { ok: false, error: e.message };
       }
     }
     
     return { ok: false, error: 'nenhum link encontrado' };
   });
   
-  if (resultado.ok) {
-    // Espera o conteúdo carregar
-    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
-    await sleep(2000);
-    return resultado.method;
+  if (!resultado.ok) {
+    return 'caderno-não-encontrado: ' + (resultado.error || '');
   }
   
-  return 'caderno-não-encontrado: ' + (resultado.error || '');
+  // Espera a nova página abrir ou a página atual atualizar
+  await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+  
+  // Verifica se abriu nova página
+  const newPage = await newPagePromise;
+  if (newPage) {
+    // Navega a página principal para a URL da nova página
+    const newUrl = newPage.url();
+    await newPage.close();
+    if (newUrl && newUrl !== 'about:blank') {
+      await page.goto(newUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      return 'navegou para nova página: ' + newUrl.substring(0, 50);
+    }
+  }
+  
+  // Verifica se a página atual mudou (pode ter atualizado via Ajax)
+  await sleep(2000);
+  
+  return resultado.method;
 }
 
 // Helper: espera o caderno carregar
@@ -659,7 +683,7 @@ app.get("/debug/pesquisa", async (req, res) => {
       
       // Abre o caderno do TRT solicitado
       const numTribunal = tribunais.replace(/\D/g, '') || '15';
-      const howCaderno = await openFirstCaderno(page, numTribunal);
+      const howCaderno = await openFirstCaderno(page, browser);
       log(`[debug] Abrindo caderno: ${howCaderno}`);
       
       await waitCadernoLoaded(page);
@@ -1118,7 +1142,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
     if (temResultados.temCaderno) {
       log(`[miner] Caderno encontrado, abrindo...`);
       const num = String(orgao).replace(/\D/g, '') || '15';
-      const howCad = await openFirstCaderno(page, num);
+      const howCad = await openFirstCaderno(page, browser);
       log(`[miner] Abriu caderno: ${howCad}`);
       await waitCadernoLoaded(page);
       
