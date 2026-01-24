@@ -484,37 +484,45 @@ app.get("/debug/pdf", async (req, res) => {
         const texto = pdfData.text || '';
         log(`[pdf] Texto extraído: ${texto.length} chars, ${pdfData.numpages} páginas`);
         
-        // Busca alvarás judiciais reais (não nomes de empresas)
-        const termosAlvara = /\b(alvará|e-?alvará|levantamento|autorizo\s+o\s+(saque|levantamento)|expeça-se\s+alvará|liberação\s+de\s+(depósito|crédito|valor)|pague-se|defiro\s+o\s+(levantamento|saque))\b/i;
-        
+        // Busca alvarás judiciais - termos mais simples
         const alvaras = [];
         const linhas = texto.split('\n');
         
+        // Primeiro, vamos ver se existe "alvará" ou "levantamento" no texto
+        const temAlvara = /alvara|alvará/i.test(texto);
+        const temLevantamento = /levantamento/i.test(texto);
+        const temExpeca = /expe[çc]a/i.test(texto);
+        const temDefiro = /defiro/i.test(texto);
+        const temPaguese = /pague-se|paguese/i.test(texto);
+        
         for (let i = 0; i < linhas.length; i++) {
-          const linha = linhas[i];
-          if (termosAlvara.test(linha)) {
-            // Pega contexto amplo (20 linhas antes e depois)
-            const inicio = Math.max(0, i - 20);
-            const fim = Math.min(linhas.length, i + 20);
+          const linha = linhas[i].toLowerCase();
+          
+          // Termos que indicam alvará de pagamento
+          if (
+            linha.includes('alvara') || linha.includes('alvará') ||
+            linha.includes('levantamento') ||
+            (linha.includes('expe') && linha.includes('a-se')) ||
+            linha.includes('pague-se') ||
+            (linha.includes('defiro') && (linha.includes('saque') || linha.includes('levant'))) ||
+            (linha.includes('autorizo') && (linha.includes('saque') || linha.includes('levant')))
+          ) {
+            // Pega contexto amplo
+            const inicio = Math.max(0, i - 15);
+            const fim = Math.min(linhas.length, i + 15);
             const contexto = linhas.slice(inicio, fim).join('\n');
             
-            // Extrai informações do contexto
+            // Extrai informações
             const processoMatch = contexto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/);
             const valorMatch = contexto.match(/R\$\s*([\d.,]+)/);
             
-            // Tenta extrair nome do beneficiário
-            const nomeMatch = contexto.match(/(?:benefici[aá]rio|reclamante|autor|credor|exequente)[:\s]+([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ][A-Za-záàâãéèêíìîóòôõúùûçÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ\s]+?)(?:\n|$|OAB|\d)/i);
-            
-            if (processoMatch || valorMatch) {
-              alvaras.push({
-                linha: i,
-                termo: linha.match(termosAlvara)?.[0],
-                processo: processoMatch?.[0] || null,
-                valor: valorMatch?.[1] || null,
-                beneficiario: nomeMatch?.[1]?.trim() || null,
-                contexto: contexto.substring(0, 1000)
-              });
-            }
+            alvaras.push({
+              linha: i,
+              termoEncontrado: linhas[i].substring(0, 100),
+              processo: processoMatch?.[0] || null,
+              valor: valorMatch?.[1] || null,
+              contexto: contexto.substring(0, 800)
+            });
           }
         }
         
@@ -522,13 +530,15 @@ app.get("/debug/pdf", async (req, res) => {
         const alvarasUnicos = [];
         const processosVistos = new Set();
         for (const a of alvaras) {
-          if (a.processo && !processosVistos.has(a.processo)) {
-            processosVistos.add(a.processo);
-            alvarasUnicos.push(a);
-          } else if (!a.processo) {
+          const chave = a.processo || a.linha;
+          if (!processosVistos.has(chave)) {
+            processosVistos.add(chave);
             alvarasUnicos.push(a);
           }
         }
+        
+        // Debug: amostra do texto para entender o formato
+        const amostraTexto = texto.substring(50000, 55000); // Pega do meio do documento
         
         const processos = [...new Set(texto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/g) || [])];
         const valores = texto.match(/R\$\s*[\d.,]+/g) || [];
@@ -538,11 +548,19 @@ app.get("/debug/pdf", async (req, res) => {
           pdfBytes: pdfBuffer.length,
           pdfPaginas: pdfData.numpages,
           textoChars: texto.length,
+          debug: {
+            temAlvara,
+            temLevantamento, 
+            temExpeca,
+            temDefiro,
+            temPaguese
+          },
           alvarasEncontrados: alvarasUnicos.length,
           alvaras: alvarasUnicos.slice(0, 10),
           processosUnicos: processos.length,
           processos: processos.slice(0, 10),
           valores: [...new Set(valores)].slice(0, 15),
+          amostraTexto,
           trechoTexto: texto.substring(0, 2000)
         };
         
