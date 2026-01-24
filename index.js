@@ -126,87 +126,96 @@ function extractWindowOpenUrl(onclick) {
   return m[1].startsWith('http') ? m[1] : 'https://dejt.jt.jus.br' + m[1];
 }
 
-// Helper: abre o primeiro caderno do tribunal na listagem
+// Helper: abre o primeiro caderno do tribunal na listagem (PRIORIDADE: VISUALIZAR/TEOR; PDF é fallback)
 async function openFirstCaderno(page, browser) {
-  // O link de baixar usa submitForm via onclick
-  // Isso pode abrir uma nova janela/aba com o PDF
-  // Precisamos capturar essa nova página
-  
-  // Configura listener para nova página
-  const newPagePromise = new Promise((resolve) => {
-    browser.once('targetcreated', async (target) => {
-      const newPage = await target.page();
-      resolve(newPage);
-    });
-    // Timeout de 10 segundos
-    setTimeout(() => resolve(null), 10000);
+  // 1) dentro da mesma linha do resultado, localizar âncora de visualização/teor
+  const sel = await page.evaluate(() => {
+    function pickAnchor(root) {
+      const cands = [];
+      (root || document).querySelectorAll('a[href], a[onclick]').forEach(a => {
+        const txt = (a.textContent || "").toLowerCase();
+        const href = a.getAttribute('href') || '';
+        const oc = a.getAttribute('onclick') || '';
+
+        const looksVisualizar =
+          /visualiz|teor|conteu|inteiro/i.test(txt) ||
+          /visualiz|teor|conteu|inteiro/i.test(href) ||
+          /visualiz|teor|conteu|inteiro/i.test(oc);
+
+        const hasRealHref = href && href !== '#';
+        const isDownload = (a.className||'').includes('link-download');
+
+        if ((looksVisualizar && (hasRealHref || oc)) && !isDownload) cands.push(a);
+      });
+
+      // fallback: qualquer <a> com href real
+      if (!cands.length && root) {
+        root.querySelectorAll('a[href]').forEach(a => {
+          const href = a.getAttribute('href') || '';
+          if (href && href !== '#' && !/diariocon$/.test(href)) cands.push(a);
+        });
+      }
+      return cands[0] || null;
+    }
+
+    // tenta primeiro na mesma linha do ícone de download
+    const down = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"]');
+    const tr = down ? down.closest('tr') : null;
+    const aPrefer = pickAnchor(tr) || pickAnchor(document);
+
+    if (!aPrefer) {
+      const aDown = document.querySelector('a.link-download, a[onclick*="plcLogicaItens"]');
+      return {
+        mode: 'fallback-download',
+        href: aDown?.getAttribute('href') || '',
+        onclick: aDown?.getAttribute('onclick') || ''
+      };
+    }
+    return {
+      mode: 'visualizar',
+      href: aPrefer.getAttribute('href') || '',
+      onclick: aPrefer.getAttribute('onclick') || ''
+    };
   });
-  
-  // Executa o clique no link de download
-  const resultado = await page.evaluate(() => {
-    function execOnclick(onclick) {
-      if (!onclick) return false;
-      const cleaned = onclick.replace(/;?\s*return\s+(false|true)\s*;?\s*$/i, '');
-      try {
-        eval(cleaned);
-        return true;
-      } catch (e) {
-        console.log('eval error:', e);
-        return false;
-      }
+
+  // 2) executa conforme o modo
+  if (sel.mode === 'visualizar') {
+    if (sel.href && sel.href !== '#') {
+      const url = sel.href.startsWith('http') ? sel.href :
+        (sel.href.startsWith('/') ? 'https://dejt.jt.jus.br' + sel.href : sel.href);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
+      return 'navegou para página de visualização';
     }
-    
-    // Busca o link com classe "link-download"
-    const links = document.querySelectorAll('a.link-download, a[onclick*="plcLogicaItens"], [onclick*="j_id132"]');
-    
-    if (links.length > 0) {
-      const link = links[0];
-      const onclick = link.getAttribute('onclick') || '';
-      
-      if (onclick && execOnclick(onclick)) {
-        return { ok: true, method: 'eval onclick', onclick: onclick.substring(0, 100) };
-      }
-      
-      link.click();
-      return { ok: true, method: 'click' };
-    }
-    
-    // Fallback: submitForm direto
-    if (typeof window.submitForm === 'function') {
-      try {
-        window.submitForm('corpo:formulario', 1, { source: 'corpo:formulario:plcLogicaItens:0:j_id132' });
-        return { ok: true, method: 'submitForm direto' };
-      } catch (e) {
-        return { ok: false, error: e.message };
-      }
-    }
-    
-    return { ok: false, error: 'nenhum link encontrado' };
-  });
-  
-  if (!resultado.ok) {
-    return 'caderno-não-encontrado: ' + (resultado.error || '');
-  }
-  
-  // Espera a nova página abrir ou a página atual atualizar
-  await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
-  
-  // Verifica se abriu nova página
-  const newPage = await newPagePromise;
-  if (newPage) {
-    // Navega a página principal para a URL da nova página
-    const newUrl = newPage.url();
-    await newPage.close();
-    if (newUrl && newUrl !== 'about:blank') {
-      await page.goto(newUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      return 'navegou para nova página: ' + newUrl.substring(0, 50);
+    if (sel.onclick) {
+      await page.evaluate((oc) => {
+        const cleaned = oc.replace(/;?\s*return\s+false\s*;?\s*$/i, '');
+        try { eval(cleaned); } catch(e) {}
+      }, sel.onclick);
+      await page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(()=>{});
+      return 'eval onclick visualizar';
     }
   }
-  
-  // Verifica se a página atual mudou (pode ter atualizado via Ajax)
-  await sleep(2000);
-  
-  return resultado.method;
+
+  // 3) fallback: aciona download (PDF) e intercepta resposta
+  const pdfResponsePromise = page.waitForResponse(r => {
+    const ct = (r.headers()['content-type']||'').toLowerCase();
+    return ct.includes('application/pdf');
+  }, { timeout: 15000 }).catch(()=>null);
+
+  if (sel.onclick) {
+    await page.evaluate((oc) => {
+      const cleaned = oc.replace(/;?\s*return\s+false\s*;?\s*$/i, '');
+      try { eval(cleaned); } catch(e) {}
+    }, sel.onclick);
+  } else {
+    await page.click('a.link-download').catch(()=>{});
+  }
+
+  const pdfResp = await pdfResponsePromise;
+  if (pdfResp) {
+    return 'baixou-PDF (fallback) ' + (pdfResp.url().slice(0,120));
+  }
+  return 'caderno-não-encontrado';
 }
 
 // Helper: espera o caderno carregar
@@ -373,7 +382,7 @@ app.get("/debug/download", async (req, res) => {
     
     const d = dataParam ? new Date(dataParam) : new Date();
     const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).toString().padStart(2, "0");
     const yyyy = d.getFullYear();
     const dataPt = `${dd}/${mm}/${yyyy}`;
 
@@ -517,7 +526,7 @@ app.get("/debug/caderno", async (req, res) => {
     
     const d = dataParam ? new Date(dataParam) : new Date();
     const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).toString().padStart(2, "0");
     const yyyy = d.getFullYear();
     const dataPt = `${dd}/${mm}/${yyyy}`;
 
@@ -693,7 +702,7 @@ app.get("/debug/pesquisa", async (req, res) => {
     
     const d = dataParam ? new Date(dataParam) : new Date();
     const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).toString().padStart(2, "0");
     const yyyy = d.getFullYear();
     const dataPt = `${dd}/${mm}/${yyyy}`;
     
@@ -923,7 +932,7 @@ app.get("/debug/probe", async (req, res) => {
     
     const d = dataParam ? new Date(dataParam) : new Date();
     const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).toString().padStart(2, "0");
     const yyyy = d.getFullYear();
     const dataPt = `${dd}/${mm}/${yyyy}`;
     
@@ -1036,7 +1045,7 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
   const d = data ? new Date(data) : new Date();
   const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).toString().padStart(2, "0");
   const yyyy = d.getFullYear();
   const dataPt = `${dd}/${mm}/${yyyy}`;
 
@@ -1523,7 +1532,7 @@ app.get("/relatorio", async (req, res) => {
         const atoPronto = RX_ALVAR.test(String(c.tipo_ato || ""));
         return c.processo && isPF && hasTicket && atoPronto;
       })
-      .slice(0, limit);
+      .slice(0,  limit);
 
     if (wantDebug) {
       return res.json({
