@@ -484,14 +484,18 @@ app.get("/debug/pdf", async (req, res) => {
         const texto = pdfData.text || '';
         log(`[pdf] Texto extraído: ${texto.length} chars, ${pdfData.numpages} páginas`);
         
-        // Busca alvarás
+        // Busca alvarás e termos relacionados a pagamento
         const alvaras = [];
         const linhas = texto.split('\n');
         for (let i = 0; i < linhas.length; i++) {
-          if (/alvar[aá]|levantamento|libera[cç][aã]o/i.test(linhas[i])) {
+          if (/alvar[aá]|levantamento|libera[cç][aã]o|pagamento|dep[oó]sito|saque|cr[eé]dito/i.test(linhas[i])) {
             const inicio = Math.max(0, i - 3);
             const fim = Math.min(linhas.length, i + 8);
-            alvaras.push({ linha: i, contexto: linhas.slice(inicio, fim).join('\n').substring(0, 800) });
+            const contexto = linhas.slice(inicio, fim).join('\n').substring(0, 800);
+            // Só adiciona se tiver valor em R$ no contexto
+            if (/R\$|reais|\d+[.,]\d{2}/i.test(contexto)) {
+              alvaras.push({ linha: i, termo: linhas[i].match(/alvar[aá]|levantamento|libera[cç][aã]o|pagamento|dep[oó]sito|saque|cr[eé]dito/i)?.[0], contexto });
+            }
           }
         }
         
