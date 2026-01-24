@@ -200,6 +200,57 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// Debug: mostra o onclick do botão Pesquisar
+app.get("/debug/botao", async (req, res) => {
+  try {
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await sleep(2000);
+    
+    const info = await page.evaluate(() => {
+      const btn = document.getElementById("corpo:formulario:botaoAcaoPesquisar") ||
+                  document.querySelector('input[value="Pesquisar"]');
+      
+      if (!btn) return { encontrado: false };
+      
+      return {
+        encontrado: true,
+        id: btn.id,
+        name: btn.name,
+        type: btn.type,
+        value: btn.value,
+        onclick: btn.getAttribute("onclick"),
+        className: btn.className,
+        // Verifica funções disponíveis
+        temSubmitForm: typeof window.submitForm === "function",
+        temMojarra: !!window.mojarra?.ab,
+        temPrimeFaces: !!window.PrimeFaces?.ab,
+        temA4J: !!window.A4J?.AJAX?.Submit,
+        // Busca outros botões
+        todosBotoes: Array.from(document.querySelectorAll('input[type="submit"], input[type="button"], button'))
+          .slice(0, 10)
+          .map(b => ({
+            id: b.id,
+            value: b.value || b.textContent,
+            onclick: b.getAttribute("onclick")?.substring(0, 200)
+          }))
+      };
+    });
+    
+    await browser.close();
+    res.json({ ok: true, info });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Debug: testa o fluxo de pesquisa e mostra o HTML resultante
 app.get("/debug/pesquisa", async (req, res) => {
   const logs = [];
