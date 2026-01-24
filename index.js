@@ -362,6 +362,181 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// Debug: baixa o PDF do caderno e extrai texto
+app.get("/debug/pdf", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunais = String(req.query.tribunais || "TRT15");
+    const dataParam = req.query.data || null;
+    
+    const d = dataParam ? new Date(dataParam) : new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const dataPt = `${dd}/${mm}/${yyyy}`;
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=pt-BR"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    
+    // Configura para capturar o PDF
+    let pdfBuffer = null;
+    let pdfUrl = null;
+    
+    // Intercepta a resposta PDF
+    page.on('response', async (response) => {
+      const contentType = response.headers()['content-type'] || '';
+      if (contentType.includes('application/pdf')) {
+        pdfUrl = response.url();
+        log(`[pdf] PDF detectado: ${pdfUrl.substring(0, 100)}`);
+        try {
+          pdfBuffer = await response.buffer();
+          log(`[pdf] PDF capturado: ${pdfBuffer.length} bytes`);
+        } catch (e) {
+          log(`[pdf] Erro ao capturar buffer: ${e.message}`);
+        }
+      }
+    });
+    
+    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9" });
+    
+    log(`[pdf] Navegando para DEJT...`);
+    await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await sleep(2000);
+    
+    // Configura formulário
+    await page.evaluate((dataPt) => {
+      const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+      for (const r of radios) {
+        if (r.value === "J" || /judici/i.test(r.id || "")) {
+          r.checked = true; r.click();
+        }
+      }
+      const all = Array.from(document.querySelectorAll("input"));
+      const ini = all.find(i => /data.?ini/i.test((i.id || "") + (i.name || "")));
+      const fim = all.find(i => /data.?fim/i.test((i.id || "") + (i.name || "")));
+      if (ini) { ini.value = dataPt; ini.dispatchEvent(new Event("change", { bubbles: true })); }
+      if (fim) { fim.value = dataPt; fim.dispatchEvent(new Event("change", { bubbles: true })); }
+    }, dataPt);
+    
+    const numTribunal = tribunais.replace(/\D/g, "");
+    await page.evaluate((num) => {
+      const selects = document.querySelectorAll('select');
+      for (const sel of selects) {
+        for (const opt of sel.options) {
+          const numOpt = (opt.textContent || "").replace(/\D/g, "");
+          if (numOpt === num) {
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            return;
+          }
+        }
+      }
+    }, numTribunal);
+    
+    await sleep(1000);
+    log(`[pdf] Pesquisando...`);
+    await clickPesquisarReal(page);
+    await waitJsfResult(page, 900);
+    
+    // Clica no download
+    log(`[pdf] Clicando no download...`);
+    await page.click('a.link-download').catch(() => {});
+    
+    // Espera o PDF ser baixado
+    await sleep(5000);
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+    
+    let resultado = { pdfCapturado: false };
+    
+    if (pdfBuffer) {
+      log(`[pdf] Extraindo texto do PDF...`);
+      
+      // Salva o PDF temporariamente
+      const pdfPath = `/tmp/caderno_${Date.now()}.pdf`;
+      fs.writeFileSync(pdfPath, pdfBuffer);
+      log(`[pdf] PDF salvo em ${pdfPath}`);
+      
+      // Tenta extrair texto usando pdftotext (se disponível) ou pdf-parse
+      try {
+        // Primeiro tenta com pdftotext (mais rápido e preciso)
+        const { execSync } = require('child_process');
+        const textoPath = pdfPath.replace('.pdf', '.txt');
+        
+        try {
+          execSync(`pdftotext -layout "${pdfPath}" "${textoPath}"`, { timeout: 60000 });
+          const texto = fs.readFileSync(textoPath, 'utf-8');
+          log(`[pdf] Texto extraído via pdftotext: ${texto.length} chars`);
+          
+          // Busca alvarás no texto
+          const alvaras = [];
+          const linhas = texto.split('\n');
+          for (let i = 0; i < linhas.length; i++) {
+            const linha = linhas[i];
+            if (/alvar[aá]|levantamento|libera[cç][aã]o/i.test(linha)) {
+              // Pega contexto (5 linhas antes e depois)
+              const inicio = Math.max(0, i - 5);
+              const fim = Math.min(linhas.length, i + 10);
+              const contexto = linhas.slice(inicio, fim).join('\n');
+              alvaras.push({ linha: i, contexto: contexto.substring(0, 1000) });
+            }
+          }
+          
+          // Busca processos
+          const processos = texto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/g) || [];
+          
+          // Busca valores em reais
+          const valores = texto.match(/R\$\s*[\d.,]+/g) || [];
+          
+          resultado = {
+            pdfCapturado: true,
+            pdfBytes: pdfBuffer.length,
+            textoChars: texto.length,
+            alvarasEncontrados: alvaras.length,
+            alvaras: alvaras.slice(0, 10),
+            processosUnicos: [...new Set(processos)].length,
+            processos: [...new Set(processos)].slice(0, 20),
+            valores: valores.slice(0, 20),
+            trechoTexto: texto.substring(0, 3000)
+          };
+          
+          // Limpa arquivos temporários
+          fs.unlinkSync(pdfPath);
+          fs.unlinkSync(textoPath);
+          
+        } catch (e) {
+          log(`[pdf] pdftotext não disponível, tentando alternativa: ${e.message}`);
+          resultado = { pdfCapturado: true, pdfBytes: pdfBuffer.length, erro: 'pdftotext não disponível' };
+        }
+        
+      } catch (e) {
+        log(`[pdf] Erro ao extrair texto: ${e.message}`);
+        resultado = { pdfCapturado: true, pdfBytes: pdfBuffer.length, erro: e.message };
+      }
+    }
+    
+    await browser.close();
+    
+    res.json({
+      ok: true,
+      data: dataPt,
+      tribunais,
+      pdfUrl,
+      resultado,
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // Debug: testa pesquisa avançada com filtro por palavra-chave
 app.get("/debug/avancada", async (req, res) => {
   const logs = [];
