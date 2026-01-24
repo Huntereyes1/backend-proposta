@@ -10,6 +10,7 @@
     "morgan": "^1.10.0",
     "p-limit": "^5.0.0",
     "puppeteer": "^23.11.1",
-    "qrcode": "^1.5.3"
+    "qrcode": "^1.5.3",
+    "pdf-parse": "^1.1.1"
   }
 }
