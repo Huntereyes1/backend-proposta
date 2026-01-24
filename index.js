@@ -484,18 +484,49 @@ app.get("/debug/pdf", async (req, res) => {
         const texto = pdfData.text || '';
         log(`[pdf] Texto extraído: ${texto.length} chars, ${pdfData.numpages} páginas`);
         
-        // Busca alvarás e termos relacionados a pagamento
+        // Busca alvarás judiciais reais (não nomes de empresas)
+        const termosAlvara = /\b(alvará|e-?alvará|levantamento|autorizo\s+o\s+(saque|levantamento)|expeça-se\s+alvará|liberação\s+de\s+(depósito|crédito|valor)|pague-se|defiro\s+o\s+(levantamento|saque))\b/i;
+        
         const alvaras = [];
         const linhas = texto.split('\n');
+        
         for (let i = 0; i < linhas.length; i++) {
-          if (/alvar[aá]|levantamento|libera[cç][aã]o|pagamento|dep[oó]sito|saque|cr[eé]dito/i.test(linhas[i])) {
-            const inicio = Math.max(0, i - 3);
-            const fim = Math.min(linhas.length, i + 8);
-            const contexto = linhas.slice(inicio, fim).join('\n').substring(0, 800);
-            // Só adiciona se tiver valor em R$ no contexto
-            if (/R\$|reais|\d+[.,]\d{2}/i.test(contexto)) {
-              alvaras.push({ linha: i, termo: linhas[i].match(/alvar[aá]|levantamento|libera[cç][aã]o|pagamento|dep[oó]sito|saque|cr[eé]dito/i)?.[0], contexto });
+          const linha = linhas[i];
+          if (termosAlvara.test(linha)) {
+            // Pega contexto amplo (20 linhas antes e depois)
+            const inicio = Math.max(0, i - 20);
+            const fim = Math.min(linhas.length, i + 20);
+            const contexto = linhas.slice(inicio, fim).join('\n');
+            
+            // Extrai informações do contexto
+            const processoMatch = contexto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/);
+            const valorMatch = contexto.match(/R\$\s*([\d.,]+)/);
+            
+            // Tenta extrair nome do beneficiário
+            const nomeMatch = contexto.match(/(?:benefici[aá]rio|reclamante|autor|credor|exequente)[:\s]+([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ][A-Za-záàâãéèêíìîóòôõúùûçÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ\s]+?)(?:\n|$|OAB|\d)/i);
+            
+            if (processoMatch || valorMatch) {
+              alvaras.push({
+                linha: i,
+                termo: linha.match(termosAlvara)?.[0],
+                processo: processoMatch?.[0] || null,
+                valor: valorMatch?.[1] || null,
+                beneficiario: nomeMatch?.[1]?.trim() || null,
+                contexto: contexto.substring(0, 1000)
+              });
             }
+          }
+        }
+        
+        // Remove duplicatas por processo
+        const alvarasUnicos = [];
+        const processosVistos = new Set();
+        for (const a of alvaras) {
+          if (a.processo && !processosVistos.has(a.processo)) {
+            processosVistos.add(a.processo);
+            alvarasUnicos.push(a);
+          } else if (!a.processo) {
+            alvarasUnicos.push(a);
           }
         }
         
@@ -507,8 +538,8 @@ app.get("/debug/pdf", async (req, res) => {
           pdfBytes: pdfBuffer.length,
           pdfPaginas: pdfData.numpages,
           textoChars: texto.length,
-          alvarasEncontrados: alvaras.length,
-          alvaras: alvaras.slice(0, 5),
+          alvarasEncontrados: alvarasUnicos.length,
+          alvaras: alvarasUnicos.slice(0, 10),
           processosUnicos: processos.length,
           processos: processos.slice(0, 10),
           valores: [...new Set(valores)].slice(0, 15),
