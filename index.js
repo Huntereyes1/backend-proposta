@@ -118,67 +118,75 @@ const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 // Helper para esperar (substitui waitForTimeout que foi removido do Puppeteer)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Helper: dispara pesquisa via o que existir no DEJT (JSF/Ajax)
+// Helper: dispara pesquisa via JSF/Ajax com detecção dinâmica de ID
 async function dispararPesquisaJSF(page) {
   return await page.evaluate(() => {
-    const tryList = [
-      () => {
-        if (typeof window.submitForm === "function") {
-          try { 
-            window.submitForm("corpo:formulario", 1, { source: "corpo:formulario:botaoAcaoPesquisar" }); 
-            return "submitForm"; 
-          } catch(e) { console.log("submitForm error:", e); }
-        }
-      },
-      () => {
-        if (window.mojarra?.ab) {
-          try { 
-            window.mojarra.ab("corpo:formulario:botaoAcaoPesquisar", null, "click", "corpo:formulario", 0); 
-            return "mojarra.ab"; 
-          } catch(e) { console.log("mojarra.ab error:", e); }
-        }
-      },
-      () => {
-        if (window.PrimeFaces?.ab) {
-          try { 
-            window.PrimeFaces.ab({ s:"corpo:formulario:botaoAcaoPesquisar", f:"corpo:formulario" }); 
-            return "PrimeFaces.ab"; 
-          } catch(e) { console.log("PrimeFaces.ab error:", e); }
-        }
-      },
-      () => {
-        if (window.A4J?.AJAX?.Submit) {
-          try { 
-            window.A4J.AJAX.Submit("corpo:formulario","corpo:formulario:botaoAcaoPesquisar",null,{"similarityGroupingId":"corpo:formulario:botaoAcaoPesquisar"}); 
-            return "A4J.AJAX.Submit"; 
-          } catch(e) { console.log("A4J error:", e); }
-        }
-      },
-      () => {
-        // Tenta executar o onclick do botão diretamente
-        const btn = document.querySelector('[id="corpo:formulario:botaoAcaoPesquisar"]');
-        if (btn) {
-          const onclick = btn.getAttribute('onclick');
-          if (onclick) {
-            try { eval(onclick); return "eval onclick"; } catch(e) {}
-          }
-          btn.click();
-          return "click";
-        }
-      },
-      () => {
-        const btn = document.querySelector('input[value="Pesquisar"]') || document.querySelector('button');
-        if (btn) { btn.click(); return "click fallback"; }
-      },
-      () => {
-        const form = document.getElementById("corpo:formulario") || document.querySelector("form");
-        if (form) { form.submit(); return "form.submit"; }
-      },
-    ];
-    for (const t of tryList) { 
-      const r = t(); 
-      if (r) return r; 
+    // Acha o botão "Pesquisar" de forma robusta
+    const btn =
+      document.getElementById("corpo:formulario:botaoAcaoPesquisar") ||
+      Array.from(document.querySelectorAll('input[type="submit"],input[type="button"],button'))
+        .find(b => /pesquis/i.test((b.value || b.textContent || "")));
+    
+    const form = document.getElementById("corpo:formulario") || btn?.form || document.querySelector("form");
+    const bid = btn?.id || null;
+    const fid = form?.id || null;
+
+    // Tenta A4J primeiro (que está disponível no DEJT)
+    try {
+      if (bid && fid && window.A4J?.AJAX?.Submit) {
+        window.A4J.AJAX.Submit(fid, bid, null, { similarityGroupingId: bid });
+        return "A4J.AJAX.Submit(" + bid + ")";
+      }
+    } catch(e) { console.log("A4J error:", e); }
+
+    // Tenta mojarra.ab
+    try {
+      if (bid && window.mojarra?.ab) {
+        window.mojarra.ab(bid, null, "click", fid, 0);
+        return "mojarra.ab(" + bid + ")";
+      }
+    } catch(e) { console.log("mojarra error:", e); }
+
+    // Tenta PrimeFaces.ab
+    try {
+      if (bid && window.PrimeFaces?.ab) {
+        window.PrimeFaces.ab({ s: bid, f: fid });
+        return "PrimeFaces.ab(" + bid + ")";
+      }
+    } catch(e) { console.log("PrimeFaces error:", e); }
+
+    // Tenta submitForm
+    try {
+      if (fid && typeof window.submitForm === "function") {
+        window.submitForm(fid, 1, { source: bid || "corpo:formulario:botaoAcaoPesquisar" });
+        return "submitForm(" + fid + ")";
+      }
+    } catch(e) { console.log("submitForm error:", e); }
+
+    // Fallback: dispara onclick real do botão
+    if (btn) {
+      // Tenta executar o onclick diretamente
+      const onclickAttr = btn.getAttribute("onclick");
+      if (onclickAttr) {
+        try { 
+          eval(onclickAttr); 
+          return "eval onclick(" + (bid || "no-id") + ")";
+        } catch(e) {}
+      }
+      
+      // MouseEvent
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      btn.dispatchEvent(ev);
+      if (typeof btn.click === "function") btn.click();
+      return "click(" + (bid || "no-id") + ")";
     }
+
+    // Último recurso: submit do form
+    if (form) {
+      form.submit();
+      return "form.submit";
+    }
+
     return "no-dispatch";
   });
 }
@@ -222,52 +230,55 @@ app.get("/debug/pesquisa", async (req, res) => {
     await page.goto(DEJT_URL, { waitUntil: "networkidle2", timeout: 60000 });
     await sleep(2000);
     
-    // 1. Seleciona tipo de caderno (Judiciário = J)
-    log("[debug] Selecionando caderno Judiciário...");
+    // 1. Seleciona tipo de caderno (Judiciário = J) e Disponibilização
+    log("[debug] Selecionando caderno Judiciário e Disponibilização...");
     await page.evaluate(() => {
-      // Busca radio button do caderno Judiciário
-      const radios = document.querySelectorAll('input[type="radio"]');
+      const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+      
+      // Marca Judiciário
       for (const r of radios) {
-        if (r.value === "J" || r.id?.includes("tipoCaderno") || r.name?.includes("tipoCaderno")) {
+        if (r.value === "J" || /judici/i.test(r.id || "") || /judici/i.test(r.name || "")) {
           r.checked = true;
           r.click();
           r.dispatchEvent(new Event("change", { bubbles: true }));
-          r.dispatchEvent(new Event("click", { bubbles: true }));
         }
       }
-      // Também tenta marcar por label
-      const labels = document.querySelectorAll('label');
-      for (const l of labels) {
-        if ((l.textContent || "").toLowerCase().includes("judiciário")) {
-          const forId = l.getAttribute("for");
-          if (forId) {
-            const radio = document.getElementById(forId);
-            if (radio) {
-              radio.checked = true;
-              radio.click();
-            }
-          }
-        }
+      
+      // Marca Disponibilização se existir
+      const dispo = radios.find(r =>
+        /disponibiliza/i.test(r.id || "") || 
+        /disponibiliza/i.test(r.name || "") || 
+        /Disponibiliza/i.test((document.querySelector(`label[for="${r.id}"]`)?.textContent || ""))
+      );
+      if (dispo) {
+        dispo.checked = true;
+        dispo.dispatchEvent(new Event("click", { bubbles: true }));
+        dispo.dispatchEvent(new Event("change", { bubbles: true }));
       }
     });
     await sleep(500);
     
-    // 2. Preenche datas
+    // 2. Preenche datas com eventos completos (focus, input, blur)
     log("[debug] Preenchendo datas...");
     await page.evaluate((dataPt) => {
-      const inputs = document.querySelectorAll('input');
-      inputs.forEach(inp => {
-        const id = (inp.id || "").toLowerCase();
-        const name = (inp.name || "").toLowerCase();
-        if (id.includes("dataini") || name.includes("dataini") || id.includes("dtini")) {
-          inp.value = dataPt;
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        if (id.includes("datafim") || name.includes("datafim") || id.includes("dtfim")) {
-          inp.value = dataPt;
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-      });
+      function setDate(inp, val) {
+        if (!inp) return;
+        inp.focus();
+        inp.dispatchEvent(new Event("focus", { bubbles: true }));
+        inp.value = "";
+        inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.value = val;
+        inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.dispatchEvent(new Event("change", { bubbles: true }));
+        inp.blur();
+        inp.dispatchEvent(new Event("blur", { bubbles: true }));
+      }
+
+      const all = Array.from(document.querySelectorAll("input"));
+      const ini = all.find(i => /data.?ini|dt.?ini/i.test((i.id || "") + (i.name || "")));
+      const fim = all.find(i => /data.?fim|dt.?fim/i.test((i.id || "") + (i.name || "")));
+      setDate(ini, dataPt);
+      setDate(fim, dataPt);
     }, dataPt);
     await sleep(500);
     
@@ -318,6 +329,9 @@ app.get("/debug/pesquisa", async (req, res) => {
     
     // Espera Ajax + mudança real de conteúdo
     await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
+    
+    // Espera aparecer algum seletor de resultados
+    await page.waitForSelector("table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar'], a[onclick*='visualizar']", { timeout: 15000 }).catch(() => {});
     
     // Espera o body crescer (indica que carregou resultados)
     await page.waitForFunction(
@@ -542,45 +556,56 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
 
   log("[miner] Página DEJT carregada");
 
-  // Preenche datas
+  // Seleciona caderno Judiciário e Disponibilização
+  await page.evaluate(() => {
+    const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+    
+    // Marca Judiciário
+    for (const r of radios) {
+      if (r.value === "J" || /judici/i.test(r.id || "") || /judici/i.test(r.name || "")) {
+        r.checked = true;
+        r.click();
+        r.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+    
+    // Marca Disponibilização se existir
+    const dispo = radios.find(r =>
+      /disponibiliza/i.test(r.id || "") || 
+      /disponibiliza/i.test(r.name || "") || 
+      /Disponibiliza/i.test((document.querySelector(`label[for="${r.id}"]`)?.textContent || ""))
+    );
+    if (dispo) {
+      dispo.checked = true;
+      dispo.dispatchEvent(new Event("click", { bubbles: true }));
+      dispo.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  await sleep(500);
+
+  // Preenche datas com eventos completos
   const preencheuDatas = await page.evaluate((dataPt) => {
-    // Busca inputs de data por vários seletores possíveis
-    const seletoresData = [
-      'input[name*="dataIni"]', 'input[id*="dataIni"]',
-      'input[name*="dataini"]', 'input[id*="dataini"]',
-      'input[name*="dtIni"]', 'input[id*="dtIni"]'
-    ];
-    
-    let inputIni = null;
-    let inputFim = null;
-    
-    for (const sel of seletoresData) {
-      const found = document.querySelector(sel);
-      if (found) { inputIni = found; break; }
+    function setDate(inp, val) {
+      if (!inp) return false;
+      inp.focus();
+      inp.dispatchEvent(new Event("focus", { bubbles: true }));
+      inp.value = "";
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.value = val;
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+      inp.blur();
+      inp.dispatchEvent(new Event("blur", { bubbles: true }));
+      return true;
     }
+
+    const all = Array.from(document.querySelectorAll("input"));
+    const ini = all.find(i => /data.?ini|dt.?ini/i.test((i.id || "") + (i.name || "")));
+    const fim = all.find(i => /data.?fim|dt.?fim/i.test((i.id || "") + (i.name || "")));
     
-    const seletoresDataFim = [
-      'input[name*="dataFim"]', 'input[id*="dataFim"]',
-      'input[name*="datafim"]', 'input[id*="datafim"]',
-      'input[name*="dtFim"]', 'input[id*="dtFim"]'
-    ];
-    
-    for (const sel of seletoresDataFim) {
-      const found = document.querySelector(sel);
-      if (found) { inputFim = found; break; }
-    }
-    
-    if (inputIni) {
-      inputIni.value = dataPt;
-      inputIni.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    if (inputFim) {
-      inputFim.value = dataPt;
-      inputFim.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    
-    return { ini: !!inputIni, fim: !!inputFim };
+    return { ini: setDate(ini, dataPt), fim: setDate(fim, dataPt) };
   }, dataPt);
+  await sleep(500);
 
   log(`[miner] Datas preenchidas: ${JSON.stringify(preencheuDatas)}`);
 
@@ -718,6 +743,9 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       
       // Espera Ajax + mudança real de conteúdo
       await page.waitForNetworkIdle({ idleTime: 2000, timeout: 30000 }).catch(() => {});
+      
+      // Espera aparecer algum seletor de resultados
+      await page.waitForSelector("table tbody tr, .ui-datatable, .rich-table, a[href*='visualizar'], a[onclick*='visualizar']", { timeout: 15000 }).catch(() => {});
       
       // Espera o body crescer
       await page.waitForFunction(
