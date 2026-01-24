@@ -1,21 +1,14 @@
 {
-  "name": "torre-pf-alvara-backend",
-  "version": "1.0.0",
-  "description": "Backend TORRE — PF e-Alvará (TRT/TJ) sem Typebot/Make",
-  "main": "index.js",
+  "name": "torre-dejt",
   "type": "module",
-  "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
-  },
-  "engines": { "node": ">=18.x" },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
-    "archiver": "7.0.1",
-    "cors": "2.8.5",
-    "express": "4.18.2",
-    "morgan": "1.10.0",
-    "p-limit": "5.0.0",
-    "puppeteer": "23.11.1",
-    "qrcode": "1.5.3"
+    "archiver": "^5",
+    "cors": "^2",
+    "express": "^4",
+    "morgan": "^1",
+    "p-limit": "^4",
+    "puppeteer": "^22",
+    "qrcode": "^1"
   }
 }

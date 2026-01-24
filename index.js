@@ -1,4 +1,4 @@
-// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.1, DEJT real)
+// index.js — TORRE PF e-Alvará (TRT/TJ) — backend puro (v4.2, DEJT real + debug)
 // Endpoints: /scan, /relatorio, /gerar-dossie, /batch, /pack, /health, /debug/last
 
 import express from "express";
@@ -27,7 +27,8 @@ const TEMPLATE_PATH = path.join(__dirname, "template.html");
 
 const MIN_TICKET_CENTS = Number(process.env.MIN_TICKET_CENTS || 2_000_000); // 20k
 const CONCURRENCY = Number(process.env.CONCURRENCY || 3);
-const DEMO = false; // <<<<< DESLIGADO SEMPRE
+const SCAN_TRIBUNAIS = String(process.env.SCAN_TRIBUNAIS || "TRT15");
+const DEMO = false; // SEMPRE DESLIGADO
 
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 if (!fs.existsSync(EXPORTS_DIR)) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
@@ -39,24 +40,35 @@ app.use(morgan("tiny"));
 let lastPdfFile = null;
 
 // Servir PDFs e exports
-app.use("/pdf", express.static(PDF_DIR, {
-  setHeaders: (res) => {
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-  },
-}));
-app.use("/exports", express.static(EXPORTS_DIR, {
-  setHeaders: (res) => res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate"),
-}));
+app.use(
+  "/pdf",
+  express.static(PDF_DIR, {
+    setHeaders: (res) => {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    },
+  })
+);
+app.use(
+  "/exports",
+  express.static(EXPORTS_DIR, {
+    setHeaders: (res) =>
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate"),
+  })
+);
 
 app.get("/", (_req, res) =>
-  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.1 — DEJT real")
+  res.send("Backend TORRE — Dossiê PF e-Alvará (TRT/TJ) v4.2 — DEJT real + debug")
 );
-app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
+app.get("/health", (_req, res) =>
+  res.json({ ok: true, now: new Date().toISOString() })
+);
 
 // ===== Utils =====
 const toNumber = (v) =>
-  typeof v === "number" ? v : Number(String(v ?? "").replace(/\./g, "").replace(",", "."));
+  typeof v === "number"
+    ? v
+    : Number(String(v ?? "").replace(/\./g, "").replace(",", "."));
 
 const centavosToBRL = (c) =>
   (Math.round(c) / 100).toLocaleString("pt-BR", {
@@ -66,7 +78,7 @@ const centavosToBRL = (c) =>
   });
 
 const safe = (s = "") =>
-  String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 function parseDataPtBRorISO(s) {
   if (!s) return "";
@@ -83,11 +95,13 @@ function parseDataPtBRorISO(s) {
 
 async function renderFromTemplate(vars) {
   let html = await fsp.readFile(TEMPLATE_PATH, "utf8");
-  // QRCode: se tiver id_ato/link, gera QR e substitui {{qrcode_dataurl}}
+  // QRCode
   let qrcodeDataUrl = "";
   const link = (vars.id_ato || vars.link_oficial || "").toString().trim();
   if (link) {
-    try { qrcodeDataUrl = await QRCode.toDataURL(link, { margin: 0 }); } catch {}
+    try {
+      qrcodeDataUrl = await QRCode.toDataURL(link, { margin: 0 });
+    } catch {}
   }
   const allVars = { ...vars, qrcode_dataurl: qrcodeDataUrl };
   for (const [k, v] of Object.entries(allVars)) {
@@ -97,16 +111,17 @@ async function renderFromTemplate(vars) {
 }
 
 function makeWaLink(text) {
-  const url = "https://wa.me/?text=" + encodeURIComponent(text);
-  return url;
+  return "https://wa.me/?text=" + encodeURIComponent(text);
 }
 function makeEmailLink(subject, body) {
-  const url = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  return url;
+  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(
+    body
+  )}`;
 }
 
 // ===== Heurísticas e RegEx para DEJT =====
-const DEJT_URL = "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y";
+const DEJT_URL =
+  "https://dejt.jt.jus.br/dejt/f/n/diariocon?pesquisacaderno=J&evento=y";
 const RX_PROC = /\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b/g;
 const RX_MOEDA = /R\$\s*([\d\.]+,\d{2})/g;
 const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
@@ -114,7 +129,14 @@ const RX_ALVAR = /(alvar[aá]|levantamento|libera[cç][aã]o)/i;
 function _parecePF(nome) {
   if (!nome) return false;
   const s = nome.toUpperCase();
-  if (s.includes(" LTDA") || s.includes(" S.A") || s.includes(" S/A") || s.includes(" EPP") || s.includes(" MEI ")) return false;
+  if (
+    s.includes(" LTDA") ||
+    s.includes(" S.A") ||
+    s.includes(" S/A") ||
+    s.includes(" EPP") ||
+    s.includes(" MEI ")
+  )
+    return false;
   return s.trim().split(/\s+/).length >= 2;
 }
 function brlToCents(brlStr) {
@@ -123,10 +145,13 @@ function brlToCents(brlStr) {
   return Number.isFinite(v) ? Math.round(v * 100) : NaN;
 }
 function pickProvavelPF(texto) {
-  const linhas = (texto || "").split(/\n+/).map(l => l.trim()).filter(Boolean);
+  const linhas = (texto || "")
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   for (const l of linhas) {
     if (/(benef|titular|credor|reclamante)/i.test(l)) {
-      const campo = l.replace(/.*?:/,'').replace(/\(.*?\)/g,'').trim();
+      const campo = l.replace(/.*?:/, "").replace(/\(.*?\)/g, "").trim();
       if (_parecePF(campo)) return campo;
     }
   }
@@ -136,73 +161,104 @@ function pickProvavelPF(texto) {
 
 // ===== Miner real (DEJT) — retorna itens já no formato do /scan
 async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
-  if (DEMO) return []; // segurança: nunca usar DEMO
+  if (DEMO) return [];
 
+  // datas
   const d = data ? new Date(data) : new Date();
-  const dd = String(d.getDate()).padStart(2,"0");
-  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yyyy = d.getFullYear();
   const dataPt = `${dd}/${mm}/${yyyy}`;
 
-  const browser = await puppeteer.launch({ args: ["--no-sandbox","--disable-setuid-sandbox"] });
+  const browser = await puppeteer.launch({
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
   const page = await browser.newPage();
 
   // 1) abre DEJT "Diários > Judiciário"
   await page.goto(DEJT_URL, { waitUntil: "domcontentloaded" });
 
-  // 2) Preenche datas e seleciona TRT-15 com duas tentativas
+  // 2) Preenche datas
   await page.evaluate((dataPt) => {
-    // datas
-    const ini = document.querySelector('input[name="dataIni"], input#dataIni');
-    const fim = document.querySelector('input[name="dataFim"], input#dataFim');
-    if (ini) { ini.value = ""; ini.dispatchEvent(new Event("input")); ini.value = dataPt; ini.dispatchEvent(new Event("change")); }
-    if (fim) { fim.value = ""; fim.dispatchEvent(new Event("input")); fim.value = dataPt; fim.dispatchEvent(new Event("change")); }
+    const ini =
+      document.querySelector('input[name="dataIni"], input#dataIni') || null;
+    const fim =
+      document.querySelector('input[name="dataFim"], input#dataFim') || null;
+    if (ini) {
+      ini.value = "";
+      ini.dispatchEvent(new Event("input"));
+    }
+    if (fim) {
+      fim.value = "";
+      fim.dispatchEvent(new Event("input"));
+    }
+    if (ini) {
+      ini.value = dataPt;
+      ini.dispatchEvent(new Event("change"));
+    }
+    if (fim) {
+      fim.value = dataPt;
+      fim.dispatchEvent(new Event("change"));
+    }
   }, dataPt);
 
-  // tenta selecionar órgão por texto
-  const okSelect = await page.evaluate(() => {
-    const sel = document.querySelector('select[name="tribunal"], select#orgaos, select#tribunal, select[name="orgao"]');
+  // 2.1 Seleciona TRT-15 (ajusta se quiser usar outros)
+  await page.evaluate(() => {
+    const sel =
+      document.querySelector(
+        'select[name="tribunal"], select#orgaos, select#tribunal, select[name="orgao"]'
+      ) || null;
     if (!sel) return false;
     const opts = Array.from(sel.options || []);
-    const alvo = opts.find(o => (o.textContent||"").includes("TRT 15"));
+    const alvo = opts.find((o) => (o.textContent || "").includes("TRT 15"));
     if (!alvo) return false;
     sel.value = alvo.value;
     sel.dispatchEvent(new Event("change"));
     return true;
   });
 
-  // TODO (se seu ambiente exigir): se okSelect === false, use page.select com o VALUE que você inspecionar no DOM.
-
   // 3) Clica "Pesquisar"
   try {
     await Promise.all([
-      page.click('input[type="submit"][value="Pesquisar"], button:has-text("Pesquisar"), input#btnPesquisar'),
-      page.waitForNavigation({ waitUntil: "networkidle2" })
+      page.click(
+        'input[type="submit"][value="Pesquisar"], button:has-text("Pesquisar"), input#btnPesquisar'
+      ),
+      page.waitForNavigation({ waitUntil: "networkidle2" }),
     ]);
   } catch {
-    // fallback: se não houver navegação, segue
+    // segue mesmo sem navegação (alguns templates não trocam URL)
   }
 
   // 4) Coleta links "Visualizar Texto"
-  const linksTexto = await page.$$eval('a', as => as
-    .filter(a => /Visualizar Texto/i.test(a.textContent || ""))
-    .map(a => a.href)
+  const linksTexto = await page.$$eval("a", (as) =>
+    as
+      .filter((a) => /Visualizar Texto/i.test(a.textContent || ""))
+      .map((a) => a.href)
   );
 
+  const registrosBrutos = [];
   const items = [];
-  for (let i = 0; i < linksTexto.length && items.length < limit; i++) {
-    const href = linksTexto[i];
+
+  // varre páginas de texto
+  for (let i = 0; i < linksTexto.length; i++) {
     try {
+      const href = linksTexto[i];
       const pg = await browser.newPage();
       await pg.goto(href, { waitUntil: "domcontentloaded" });
-      const conteudo = await pg.$eval('body', el => el.innerText || "");
+      const conteudo = await pg.$eval("body", (el) => el.innerText || "");
       await pg.close();
 
+      registrosBrutos.push({ href, tam: conteudo.length });
+
+      // Heurística de presença de ato
       if (!RX_ALVAR.test(conteudo)) continue;
 
-      const procs = (conteudo.match(RX_PROC) || []).slice(0,1);
+      // Processo
+      const procs = (conteudo.match(RX_PROC) || []).slice(0, 1);
       const processo = procs[0] || "";
+      if (!processo) continue;
 
+      // Maior valor encontrado
       let valorCents = NaN;
       let m;
       while ((m = RX_MOEDA.exec(conteudo))) {
@@ -211,10 +267,11 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
       }
       if (!Number.isFinite(valorCents)) continue;
 
-      const tipo_ato = RX_ALVAR.test(conteudo) ? "e-Alvará" : "Levantamento";
+      // Nome PF
       const pf_nome = pickProvavelPF(conteudo);
       if (!pf_nome) continue;
 
+      const tipo_ato = "e-Alvará";
       items.push({
         tribunal: "TRT15",
         vara: "",
@@ -225,71 +282,134 @@ async function scanMiner({ limit = 60, tribunais = "TRT15", data = null }) {
         tipo_ato,
         banco_pagador: /CEF/i.test(conteudo) ? "CEF" : "BB",
         id_ato: href,
-        link_oficial: href
+        link_oficial: href,
       });
-    } catch {}
+
+      if (items.length >= limit) break;
+    } catch {
+      /* ignora erros por item */
+    }
   }
 
   await browser.close();
-  return items;
+
+  // Mantém os brutos (para debug no endpoint)
+  return { items, registrosBrutos, totalBruto: registrosBrutos.length };
 }
 
-// ===== /scan (usa miner real + filtro TORRE) — retorno JSON
+// ===== /scan — JSON (agora com ?debug=1)
 app.get("/scan", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 60), 120);
-    const tribunais = String(req.query.tribunais || process.env.SCAN_TRIBUNAIS || "TRT15");
+    const tribunais =
+      String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15") || "TRT15";
     const data = req.query.data || null;
+    const wantDebug = String(req.query.debug || "0") === "1";
 
-    const cases = await scanMiner({ limit, tribunais, data });
+    const { items: brutos, registrosBrutos, totalBruto } = await scanMiner({
+      limit,
+      tribunais,
+      data,
+    });
 
-    const filtered = cases.filter(c => {
+    // Filtro TORRE
+    const filtrados = brutos.filter((c) => {
       const cents = Number(c.valor_centavos);
       const isPF = _parecePF(c.pf_nome);
       const atoPronto = RX_ALVAR.test(String(c.tipo_ato || ""));
-      return c.tribunal && c.processo && isPF && (cents >= MIN_TICKET_CENTS) && atoPronto;
+      return c.tribunal && c.processo && isPF && cents >= MIN_TICKET_CENTS && atoPronto;
     });
 
-    res.json({ ok: true, items: filtered.slice(0, limit) });
+    if (wantDebug) {
+      return res.json({
+        ok: true,
+        data,
+        tribunais,
+        total_bruto: totalBruto,
+        total_filtrado: filtrados.length,
+        amostras_brutas: registrosBrutos.slice(0, 10),
+        itens_filtrados_preview: filtrados.slice(0, Math.min(5, filtrados.length)),
+      });
+    }
+
+    res.json({ ok: true, items: filtrados.slice(0, limit) });
   } catch (e) {
     console.error("Erro /scan:", e);
-    res.status(500).json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
+    res
+      .status(500)
+      .json({ ok: false, error: "Falha no scan", cause: String(e?.message || e) });
   }
 });
 
-// ===== /relatorio — varre DEJT, filtra TORRE e gera 1 PDF consolidado (top N)
+// ===== /relatorio — PDF consolidado (top N) + ?debug=1
 app.get("/relatorio", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 15), 50);
     const data = req.query.data || null;
+    const tribunais =
+      String(req.query.tribunais || SCAN_TRIBUNAIS || "TRT15") || "TRT15";
+    const wantDebug = String(req.query.debug || "0") === "1";
 
-    const brutos = await scanMiner({ limit: limit * 3, tribunais: "TRT15", data });
-    const filtrados = brutos.filter(c => {
-      const isPF = _parecePF(c.pf_nome);
-      const hasTicket = Number(c.valor_centavos) >= MIN_TICKET_CENTS;
-      const atoPronto = RX_ALVAR.test(String(c.tipo_ato||""));
-      return c.processo && isPF && hasTicket && atoPronto;
-    }).slice(0, limit);
+    const { items: brutos, registrosBrutos, totalBruto } = await scanMiner({
+      limit: limit * 3,
+      tribunais,
+      data,
+    });
 
-    if (!filtrados.length) {
-      return res.status(404).json({ ok:false, error:"Nada elegível no DEJT (TRT-15) para a data." });
+    const filtrados = brutos
+      .filter((c) => {
+        const isPF = _parecePF(c.pf_nome);
+        const hasTicket = Number(c.valor_centavos) >= MIN_TICKET_CENTS;
+        const atoPronto = RX_ALVAR.test(String(c.tipo_ato || ""));
+        return c.processo && isPF && hasTicket && atoPronto;
+      })
+      .slice(0, limit);
+
+    if (wantDebug) {
+      // sai em JSON pra inspeção
+      return res.json({
+        ok: true,
+        data,
+        tribunais,
+        total_bruto: totalBruto,
+        total_filtrado: filtrados.length,
+        amostras_brutas: registrosBrutos.slice(0, 10),
+        itens_filtrados_preview: filtrados.slice(0, Math.min(5, filtrados.length)),
+      });
     }
 
-    const rows = filtrados.map((c,i) => `
+    if (!filtrados.length) {
+      return res
+        .status(404)
+        .json({
+          ok: false,
+          error: `Nada elegível no DEJT (${tribunais}) para a data.`,
+          total_bruto: totalBruto,
+          total_filtrado: 0,
+        });
+    }
+
+    // HTML da tabela
+    const rows = filtrados
+      .map(
+        (c, i) => `
       <tr>
-        <td>${i+1}</td>
+        <td>${i + 1}</td>
         <td>${safe(c.pf_nome)}</td>
         <td>${safe(c.processo)}</td>
         <td>${safe(c.tribunal)}</td>
-        <td>${safe(c.tipo_ato||"e-Alvará")}</td>
+        <td>${safe(c.tipo_ato || "e-Alvará")}</td>
         <td>${centavosToBRL(c.valor_centavos)}</td>
-        <td><a href="${safe(c.link_oficial||c.id_ato||"#")}">ato</a></td>
-      </tr>
-    `).join("");
+        <td><a href="${safe(c.link_oficial || c.id_ato || "#")}">ato</a></td>
+      </tr>`
+      )
+      .join("");
 
-    const dataLabel = data ? new Date(data).toLocaleDateString("pt-BR") : new Date().toLocaleDateString("pt-BR");
-    const html = `
-<!doctype html><html lang="pt-br"><meta charset="utf-8">
+    const dataLabel = data
+      ? new Date(data).toLocaleDateString("pt-BR")
+      : new Date().toLocaleDateString("pt-BR");
+
+    const html = `<!doctype html><html lang="pt-br"><meta charset="utf-8">
 <title>Dossiê Consolidado — ${filtrados.length} casos</title>
 <style>
   body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:24px;color:#111}
@@ -299,9 +419,13 @@ app.get("/relatorio", async (req, res) => {
   th{background:#f4f6f8;text-align:left}
   .meta{opacity:.75;font-size:12px;margin-bottom:12px}
 </style>
-<h1>Dossiê Consolidado — ${filtrados.length} casos (TRT-15 / ${dataLabel})</h1>
+<h1>Dossiê Consolidado — ${filtrados.length} casos (${safe(
+      tribunais
+    )} / ${dataLabel})</h1>
 <div class="meta">
-  Regra TORRE: PF nominal • Ticket ≥ ${centavosToBRL(MIN_TICKET_CENTS)} • Ato pronto (alvará/levantamento)
+  Regra TORRE: PF nominal • Ticket ≥ ${centavosToBRL(
+    MIN_TICKET_CENTS
+  )} • Ato pronto (alvará/levantamento)
 </div>
 <table>
   <thead>
@@ -314,14 +438,16 @@ app.get("/relatorio", async (req, res) => {
     const fileName = `relatorio-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
-    const browser = await puppeteer.launch({ args:["--no-sandbox","--disable-setuid-sandbox"] });
+    const browser = await puppeteer.launch({
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
     await page.pdf({
       path: filePath,
       format: "A4",
       margin: { top: "12mm", right: "12mm", bottom: "14mm", left: "12mm" },
-      printBackground: true
+      printBackground: true,
     });
     await browser.close();
 
@@ -332,16 +458,16 @@ app.get("/relatorio", async (req, res) => {
       count: filtrados.length,
       url: `${BASE_URL}/pdf/${fileName}`,
       preview: `${BASE_URL}/pdf/${fileName}#view=fitH`,
-      items: filtrados.map(c => ({
+      items: filtrados.map((c) => ({
         pf_nome: c.pf_nome,
         processo: c.processo,
         valor: centavosToBRL(c.valor_centavos),
-        link: c.link_oficial || c.id_ato
-      }))
+        link: c.link_oficial || c.id_ato,
+      })),
     });
   } catch (e) {
     console.error("Erro /relatorio:", e);
-    res.status(500).json({ ok:false, error:String(e?.message||e) });
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
@@ -349,9 +475,18 @@ app.get("/relatorio", async (req, res) => {
 app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
   try {
     const {
-      tribunal, vara, processo, data_ato, pf_nome,
-      valor_centavos, valor_reais,
-      tipo_ato, banco_pagador, id_ato, link_oficial, fee_percent
+      tribunal,
+      vara,
+      processo,
+      data_ato,
+      pf_nome,
+      valor_centavos,
+      valor_reais,
+      tipo_ato,
+      banco_pagador,
+      id_ato,
+      link_oficial,
+      fee_percent,
     } = req.body || {};
 
     const isPF = _parecePF(pf_nome);
@@ -366,7 +501,15 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       return res.status(400).json({
         ok: false,
         error: "Regras TORRE: PF nominal, ticket ≥ R$ 20k e ato pronto.",
-        debug: { tribunal, processo, pf_nome, valor_centavos, tipo_ato, hasTicket, atoPronto }
+        debug: {
+          tribunal,
+          processo,
+          pf_nome,
+          valor_centavos,
+          tipo_ato,
+          hasTicket,
+          atoPronto,
+        },
       });
     }
 
@@ -385,14 +528,14 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       banco_pagador: safe(banco_pagador || "BB/CEF"),
       id_ato: safe(id_ato || link_oficial || ""),
       fee_percent: safe(fee_percent || "10–20"),
-      link_oficial: safe(link_oficial || "")
+      link_oficial: safe(link_oficial || ""),
     });
 
     const fileName = `dossie-${Date.now()}.pdf`;
     const filePath = path.join(PDF_DIR, fileName);
 
     const browser = await puppeteer.launch({
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
@@ -400,13 +543,15 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       path: filePath,
       format: "A4",
       margin: { top: "14mm", bottom: "14mm", left: "14mm", right: "14mm" },
-      printBackground: true
+      printBackground: true,
     });
     await browser.close();
 
     lastPdfFile = fileName;
 
-    const pitch1 = `${pf_nome}, no ${tribunal} proc. ${processo} há ${tipo_ato || "e-Alvará"} de ${valorBRL} em seu nome.\nTe guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
+    const pitch1 = `${pf_nome}, no ${tribunal} proc. ${processo} há ${
+      tipo_ato || "e-Alvará"
+    } de ${valorBRL} em seu nome.\nTe guio BB/CEF em 3–7 dias; você só me paga 10–20% após cair. Dossiê: ${BASE_URL}/pdf/${fileName}`;
     const wa = makeWaLink(pitch1);
     const email = makeEmailLink(
       `Dossiê — ${tribunal} — proc. ${processo}`,
@@ -419,15 +564,17 @@ app.post(["/gerar-dossie", "/gerar-proposta"], async (req, res) => {
       last: `${BASE_URL}/pdf/proposta.pdf`,
       whatsapp: wa,
       email,
-      file: fileName
+      file: fileName,
     });
   } catch (e) {
     console.error("Erro /gerar-dossie:", e);
-    return res.status(500).json({ ok: false, error: "Erro ao gerar PDF", cause: String(e?.message || e) });
+    return res
+      .status(500)
+      .json({ ok: false, error: "Erro ao gerar PDF", cause: String(e?.message || e) });
   }
 });
 
-// ===== /batch — recebe { items: [Case, ...] } e gera PDFs em fila
+// ===== /batch — { items: [...] } → PDFs + CSV
 app.post("/batch", async (req, res) => {
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -437,48 +584,58 @@ app.post("/batch", async (req, res) => {
     const results = [];
     for (let i = 0; i < items.length; i++) {
       const body = items[i];
-      const run = () => fetch(`${BASE_URL}/gerar-dossie`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      }).then(r => r.json()).catch(e => ({ ok:false, error:String(e) }));
+      const run = () =>
+        fetch(`${BASE_URL}/gerar-dossie`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+          .then((r) => r.json())
+          .catch((e) => ({ ok: false, error: String(e) }));
       results.push(limit(run));
     }
     const out = await Promise.all(results);
 
+    // CSV
     const now = new Date();
-    const stamp = now.toISOString().slice(0,19).replace(/[:T]/g,"-");
+    const stamp = now.toISOString().slice(0, 19).replace(/[:T]/g, "-");
     const csvName = `lote-${stamp}.csv`;
     const csvPath = path.join(EXPORTS_DIR, csvName);
 
-    const lines = [
-      "tribunal,processo,pf_nome,valor,link_oficial,pdf_url,whatsapp_link,status"
-    ];
+    const lines = ['tribunal,processo,pf_nome,valor,link_oficial,pdf_url,whatsapp_link,status'];
     for (let i = 0; i < items.length; i++) {
       const c = items[i];
       const r = out[i] || {};
-      const valor = Number.isFinite(c.valor_centavos) ? centavosToBRL(c.valor_centavos) : (c.valor_reais || "");
-      lines.push([
-        c.tribunal || "",
-        c.processo || "",
-        (c.pf_nome || "").replaceAll(",", " "),
-        valor,
-        c.link_oficial || c.id_ato || "",
-        r.url || "",
-        r.whatsapp || "",
-        r.ok ? "OK" : "ERRO"
-      ].map(x => `"${String(x ?? "").replaceAll('"','""')}"`).join(","));
+      const valor = Number.isFinite(c.valor_centavos)
+        ? centavosToBRL(c.valor_centavos)
+        : c.valor_reais || "";
+      lines.push(
+        [
+          c.tribunal || "",
+          c.processo || "",
+          (c.pf_nome || "").replaceAll(",", " "),
+          valor,
+          c.link_oficial || c.id_ato || "",
+          r.url || "",
+          r.whatsapp || "",
+          r.ok ? "OK" : "ERRO",
+        ]
+          .map((x) => `"${String(x ?? "").replaceAll('"', '""')}"`)
+          .join(",")
+      );
     }
     await fsp.writeFile(csvPath, lines.join("\n"), "utf8");
 
     return res.json({ ok: true, items: out, csv: `${BASE_URL}/exports/${csvName}` });
   } catch (e) {
     console.error("Erro /batch:", e);
-    res.status(500).json({ ok: false, error: "Erro no batch", cause: String(e?.message || e) });
+    res
+      .status(500)
+      .json({ ok: false, error: "Erro no batch", cause: String(e?.message || e) });
   }
 });
 
-// ===== /pack — { files: ["dossie-....pdf", ...] } → zip
+// ===== /pack — { files: [...] } → zip
 app.post("/pack", async (req, res) => {
   try {
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
@@ -502,18 +659,26 @@ app.post("/pack", async (req, res) => {
     });
   } catch (e) {
     console.error("Erro /pack:", e);
-    res.status(500).json({ ok: false, error: "Erro no pack", cause: String(e?.message || e) });
+    res
+      .status(500)
+      .json({ ok: false, error: "Erro no pack", cause: String(e?.message || e) });
   }
 });
 
-// ===== Debug
+// ===== Debug util
 app.get("/pdf/proposta.pdf", (_req, res) => {
   if (!lastPdfFile) return res.status(404).send("PDF ainda não gerado.");
   return res.redirect(`${BASE_URL}/pdf/${lastPdfFile}`);
 });
 app.get("/debug/last", (_req, res) => {
-  const exists = lastPdfFile ? fs.existsSync(path.join(PDF_DIR, lastPdfFile)) : false;
-  res.json({ lastPdfFile, exists, open: lastPdfFile ? `${BASE_URL}/pdf/${lastPdfFile}` : null });
+  const exists = lastPdfFile
+    ? fs.existsSync(path.join(PDF_DIR, lastPdfFile))
+    : false;
+  res.json({
+    lastPdfFile,
+    exists,
+    open: lastPdfFile ? `${BASE_URL}/pdf/${lastPdfFile}` : null,
+  });
 });
 
 // ===== Start
