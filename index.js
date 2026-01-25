@@ -1,5 +1,5 @@
-// ===== TORRE v10.0 — Sistema Completo de Leads Confirmados =====
-// Endpoints: /api/leads, /api/dossie, /api/telefone, /api/pdf, /health
+// ===== TORRE v11.0 — Sistema Completo de Leads Qualificados =====
+// MELHORIAS: banco regex, falso-positivo PJ, idade máxima, score refinado, prova.trecho
 
 import express from "express";
 import cors from "cors";
@@ -19,13 +19,17 @@ const PDF_DIR = process.env.PDF_DIR || "/tmp/pdf";
 
 // ===== API Keys =====
 const DATAJUD_API_KEY = process.env.DATAJUD_API_KEY || "APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==";
-const INFOSIMPLES_TOKEN = process.env.INFOSIMPLES_TOKEN || "LUdOqPRSc0SqVRAKf594tnE0nk7GBi0WSek10Wkh";
+const INFOSIMPLES_TOKEN = process.env.INFOSIMPLES_TOKEN || "";
 const DIRECTDATA_TOKEN = process.env.DIRECTDATA_TOKEN || "";
 
-// ===== Configurações =====
-const MIN_VALOR_CENTAVOS = Number(process.env.MIN_VALOR || 2000000); // R$ 20.000
-const MIN_SCORE = Number(process.env.MIN_SCORE || 50);
-const MAX_IDADE_DIAS = Number(process.env.MAX_IDADE_DIAS || 1095); // 3 anos
+// ===== Configurações TORRE =====
+const CONFIG = {
+  MIN_VALOR_CENTAVOS: Number(process.env.MIN_VALOR || 2000000), // R$ 20.000
+  MIN_SCORE: Number(process.env.MIN_SCORE || 60),
+  MAX_IDADE_DIAS: Number(process.env.MAX_IDADE_DIAS || 540), // 18 meses - descarta
+  IDADE_GARIMPO_DIAS: 720, // > 720 dias vai pra lista garimpo
+  IDADE_PENALIDADE_DIAS: 365 // > 365 dias perde pontos
+};
 
 // ===== Setup =====
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
@@ -73,258 +77,319 @@ const centavosToBRL = (c) => (Math.round(c) / 100).toLocaleString("pt-BR", {
 
 const calcularIdadeDias = (dataStr) => {
   if (!dataStr) return null;
-  
-  // Tenta parsear diferentes formatos
   let data;
-  
-  // Formato: "14/08/2025 13:32" ou "14/08/2025"
   if (typeof dataStr === 'string' && dataStr.includes('/')) {
     const partes = dataStr.split(' ')[0].split('/');
     if (partes.length === 3) {
       data = new Date(partes[2], partes[1] - 1, partes[0]);
     }
-  }
-  // Formato ISO
-  else {
+  } else {
     data = new Date(dataStr);
   }
-  
   if (!data || isNaN(data.getTime())) return null;
-  
-  const agora = new Date();
-  return Math.floor((agora - data) / (1000 * 60 * 60 * 24));
-};
-
-// Converte data BR para ISO
-const dataParaISO = (dataStr) => {
-  if (!dataStr) return null;
-  
-  if (typeof dataStr === 'string' && dataStr.includes('/')) {
-    const [dataParte, horaParte] = dataStr.split(' ');
-    const [dia, mes, ano] = dataParte.split('/');
-    if (horaParte) {
-      return `${ano}-${mes}-${dia}T${horaParte}:00`;
-    }
-    return `${ano}-${mes}-${dia}`;
-  }
-  return dataStr;
+  return Math.floor((new Date() - data) / (1000 * 60 * 60 * 24));
 };
 
 const safe = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-// ===== Health & Saude =====
-app.get("/", (_req, res) => res.send("TORRE v10.1 — Sistema de Leads Confirmados"));
+// ===== DETECTOR DE PJ (Pessoa Jurídica) =====
+function detectarPJ(texto) {
+  if (!texto) return false;
+  const upper = texto.toUpperCase();
+  const termosPJ = [
+    'LTDA', 'S.A.', 'S/A', ' SA ', 'S.A', 
+    ' ME ', ' ME.', ' EPP', 'EIRELI', 'MEI ',
+    'EMPREENDIMENTOS', 'INCORPORADORA', 'CONSTRUTORA',
+    'COMERCIO', 'COMÉRCIO', 'INDUSTRIA', 'INDÚSTRIA',
+    'SERVICOS', 'SERVIÇOS', 'TRANSPORTES', 'LOGISTICA',
+    'CNPJ', 'EMPRESA', 'COMPANHIA', 'CIA.', 'CIA ',
+    'ASSOCIACAO', 'ASSOCIAÇÃO', 'FUNDACAO', 'FUNDAÇÃO',
+    'INSTITUTO', 'COOPERATIVA', 'CONDOMINIO', 'CONDOMÍNIO'
+  ];
+  return termosPJ.some(t => upper.includes(t));
+}
 
-app.get("/health", (_req, res) => res.json({ 
-  ok: true, 
-  version: "10.1",
-  directDataConfigured: !!DIRECTDATA_TOKEN,
-  infosimplesConfigured: !!INFOSIMPLES_TOKEN,
-  now: new Date().toISOString() 
-}));
+// ===== DETECTOR DE ADVOGADO/PATRONO =====
+function detectarAdvogado(texto) {
+  if (!texto) return false;
+  const lower = texto.toLowerCase();
+  const termos = ['advogado', 'patrono', 'honorário', 'sucumbência', 'perito', 'curador', 'procurador'];
+  return termos.some(t => lower.includes(t));
+}
 
-app.get("/api/saude", (_req, res) => res.json({
-  ok: true,
-  version: "10.1",
-  config: {
-    directData: DIRECTDATA_TOKEN ? "✅ Configurado" : "❌ Aguardando token",
-    infosimples: INFOSIMPLES_TOKEN ? "✅ Configurado" : "❌ Falta token",
-    minScore: MIN_SCORE,
-    minValor: centavosToBRL(MIN_VALOR_CENTAVOS),
-    maxIdadeDias: MAX_IDADE_DIAS
-  },
-  endpoints: [
-    "GET /api/leads?tribunal=TRT15&limite=20&minScore=50&minValor=2000000",
-    "GET /api/dossie?processo=XXXXXXX",
-    "GET /api/telefone?cpf=XXXXXXXXXXX",
-    "POST /api/pdf (body: tribunal, vara, processo, pf_nome, etc)"
-  ],
-  tribunaisDisponiveis: Object.keys(DATAJUD_ENDPOINTS),
-  now: new Date().toISOString()
-}));
+// ===== DETECTOR DE BANCO =====
+function detectarBanco(texto) {
+  if (!texto) return null;
+  const upper = texto.toUpperCase();
+  
+  // Banco do Brasil
+  if (/BANCO DO BRASIL|BB\s|\.BB\.|\/BB\/|AGÊNCIA BB|\bBB\b/i.test(upper)) {
+    return 'BB';
+  }
+  
+  // Caixa Econômica Federal
+  if (/CAIXA ECON|CEF\s|\.CEF\.|\/CEF\/|CAIXA FEDERAL|\bCEF\b/i.test(upper)) {
+    return 'CEF';
+  }
+  
+  return null;
+}
 
-// ===== FILTRO TORRE - Análise de Movimentos =====
-function analisarMovimentosTORRE(movimentos) {
+// ===== DETECTOR DE SAQUE JÁ REALIZADO =====
+function detectarSaqueRealizado(texto) {
+  if (!texto) return false;
+  const lower = texto.toLowerCase();
+  const termos = [
+    'cumprido', 'levantado', 'levantamento efetuado', 
+    'transferido ao beneficiário', 'pago', 'quitado',
+    'baixado', 'devolução do alvará', 'alvará cumprido',
+    'valor sacado', 'saque realizado', 'creditado'
+  ];
+  return termos.some(t => lower.includes(t));
+}
+
+// ===== EXTRATOR DE VALOR =====
+function extrairValor(texto) {
+  if (!texto) return null;
+  const match = texto.match(/R\$\s*([\d.,]+)/i);
+  if (!match) return null;
+  const valorStr = match[1].replace(/\./g, '').replace(',', '.');
+  const valor = parseFloat(valorStr);
+  if (isNaN(valor) || valor <= 0) return null;
+  return Math.round(valor * 100);
+}
+
+// ===== DETECTOR DE CÓDIGO DE ALVARÁ =====
+function detectarCodigoAlvara(texto) {
+  if (!texto) return { tem: false, codigo: null };
+  
+  // Padrões comuns de código de alvará
+  const padroes = [
+    /c[óo]digo[:\s]*(\d{5,})/i,
+    /guia[:\s]*(\d{5,})/i,
+    /id[:\s]*alvará[:\s]*(\d{5,})/i,
+    /alvará[:\s]*n[º°]?\s*(\d{5,})/i,
+    /protocolo[:\s]*(\d{5,})/i
+  ];
+  
+  for (const p of padroes) {
+    const match = texto.match(p);
+    if (match) return { tem: true, codigo: match[1] };
+  }
+  
+  return { tem: false, codigo: null };
+}
+
+// ===== CALCULAR SCORE REFINADO =====
+function calcularScoreRefinado(params) {
+  const { 
+    pfNomeadaNoMovimento, 
+    bancoDetectado, 
+    valorDoAlvara,
+    valorDaCausa,
+    idadeDias,
+    temCodigoAlvara,
+    possivelPJ
+  } = params;
+
+  let score = 0;
+  const detalhes = [];
+
+  // +30 PF nome na mesma linha do movimento de alvará
+  if (pfNomeadaNoMovimento) {
+    score += 30;
+    detalhes.push('+30 PF nomeada no movimento');
+  }
+
+  // +25 banco detectado (BB ou CEF)
+  if (bancoDetectado) {
+    score += 25;
+    detalhes.push(`+25 banco ${bancoDetectado}`);
+  }
+
+  // +20 valor do alvará presente (não valor da causa)
+  if (valorDoAlvara) {
+    score += 20;
+    detalhes.push('+20 valor do alvará');
+  }
+
+  // -25 se fonte for valor_causa (não é certo)
+  if (!valorDoAlvara && valorDaCausa) {
+    score -= 25;
+    detalhes.push('-25 só tem valor_causa (incerto)');
+  }
+
+  // +15 idade ≤ 120 dias
+  if (idadeDias !== null && idadeDias <= 120) {
+    score += 15;
+    detalhes.push('+15 recente (≤120 dias)');
+  }
+
+  // +10 código de alvará presente
+  if (temCodigoAlvara) {
+    score += 10;
+    detalhes.push('+10 código alvará');
+  }
+
+  // -20 se idade > 365 dias
+  if (idadeDias !== null && idadeDias > 365) {
+    score -= 20;
+    detalhes.push('-20 antigo (>365 dias)');
+  }
+
+  // -50 se possível PJ (descarta praticamente)
+  if (possivelPJ) {
+    score -= 50;
+    detalhes.push('-50 possível PJ');
+  }
+
+  return {
+    score: Math.max(0, Math.min(100, score)),
+    detalhes
+  };
+}
+
+// ===== ANALISAR MOVIMENTO DE ALVARÁ (InfoSimples) =====
+function analisarMovimentoAlvara(movimentos) {
   const resultado = {
     confirmado: false,
     tipo: null,
-    dataAlvara: null,
+    data: null,
     banco: null,
-    valor: null,
     valorCentavos: null,
-    movimentoAlvara: null,
-    motivoDescarte: null,
-    temCodigoAlvara: false
+    beneficiarioNoMovimento: null,
+    possivelPJ: false,
+    saqueRealizado: false,
+    temCodigoAlvara: false,
+    codigoAlvara: null,
+    prova: { trecho: null, movimento: null }
   };
 
-  // Termos que CONFIRMAM alvará
-  const termosConfirmados = [
-    /alvará/i,
-    /guia de (levantamento|liberação)/i,
-    /autorizo o levantamento/i,
-    /liberação de valores/i,
-    /expe(ça-se|dido|dição).{0,20}alvará/i,
-    /mandado de levantamento/i
-  ];
+  if (!movimentos || !Array.isArray(movimentos)) return resultado;
 
-  // Termos de BAIXA (descarta - já foi sacado)
-  const termosBaixa = [
-    /cumprido/i,
-    /levantado/i,
-    /levantamento efetuado/i,
-    /pago/i,
-    /devolvido/i,
-    /cancelado/i,
-    /arquiv/i,
-    /baixado/i,
-    /transferido ao beneficiário/i,
-    /alvará cumprido/i,
-    /devolução do alvará/i
-  ];
+  // Ordena do mais recente pro mais antigo
+  const ordenados = [...movimentos].sort((a, b) => {
+    const dataA = a.data || '';
+    const dataB = b.data || '';
+    return dataB.localeCompare(dataA);
+  });
 
-  // Termos de ADVOGADO (descarta)
-  const termosAdvogado = [
-    /advogado/i,
-    /patrono/i,
-    /honorários/i,
-    /sucumb/i,
-    /perito/i,
-    /procurador/i
-  ];
+  for (const mov of ordenados) {
+    const titulo = mov.titulo || '';
+    const tituloLower = titulo.toLowerCase();
 
-  // Termos de RUÍDO (ignorar)
-  const termosRuido = [
-    /alvará para expedição de ofício/i,
-    /alvará de publicação/i,
-    /alvará de traslado/i
-  ];
+    // Verifica se é movimento de alvará
+    const ehAlvara = tituloLower.includes('alvará') || 
+                     tituloLower.includes('levantamento') ||
+                     tituloLower.includes('liberação');
 
-  // Bancos
-  const termosBanco = {
-    bb: /banco do brasil|bb\b/i,
-    cef: /caixa econ|cef\b|caixa federal/i
-  };
+    if (!ehAlvara) continue;
 
-  // Analisa cada movimento (do mais recente pro mais antigo)
-  const movimentosOrdenados = [...movimentos].sort((a, b) => 
-    new Date(b.dataHora || 0) - new Date(a.dataHora || 0)
-  );
-
-  for (const mov of movimentosOrdenados) {
-    const nome = (mov.nome || "").toLowerCase();
-    const complementos = (mov.complementosTabelados || [])
-      .map(c => (c.nome || "").toLowerCase())
-      .join(" ");
-    const textoCompleto = `${nome} ${complementos}`;
-
-    // Ignora ruído
-    if (termosRuido.some(regex => regex.test(textoCompleto))) continue;
-
-    // Verifica se tem termo de alvará
-    const temAlvara = termosConfirmados.some(regex => regex.test(textoCompleto));
-    const temComplementoAlvara = complementos.includes('alvará');
-
-    if (!temAlvara && !temComplementoAlvara) continue;
-
-    // Verifica se já foi cumprido/baixado
-    const jaBaixado = termosBaixa.some(regex => regex.test(textoCompleto));
-    if (jaBaixado) {
-      resultado.motivoDescarte = "Alvará já cumprido/levantado/pago";
+    // Verifica saque já realizado
+    if (detectarSaqueRealizado(titulo)) {
+      resultado.saqueRealizado = true;
       continue;
     }
 
-    // Verifica se é do advogado
-    const eDoAdvogado = termosAdvogado.some(regex => regex.test(textoCompleto));
-    if (eDoAdvogado) {
-      resultado.motivoDescarte = "Alvará do advogado/patrono, não do reclamante PF";
-      continue;
+    // Extrai beneficiário do movimento
+    const matchBenef = titulo.match(/(?:a\(o\)|ao?)\s+([A-ZÀ-Ú][A-ZÀ-Ú\s.]+)/i);
+    if (matchBenef) {
+      const beneficiario = matchBenef[1].trim();
+      resultado.beneficiarioNoMovimento = beneficiario;
+      
+      // Verifica se é PJ
+      if (detectarPJ(beneficiario)) {
+        resultado.possivelPJ = true;
+        continue; // Pula PJ, procura outro movimento
+      }
+      
+      // Verifica se é advogado
+      if (detectarAdvogado(titulo)) {
+        continue; // Pula advogado
+      }
     }
 
-    // PASSOU NO FILTRO TORRE! ✅
+    // CONFIRMADO!
     resultado.confirmado = true;
-    resultado.tipo = temComplementoAlvara ? "alvara_expedido" : "liberacao_valores";
-    resultado.dataAlvara = mov.dataHora;
-    resultado.movimentoAlvara = {
-      nome: mov.nome,
-      complemento: complementos,
-      data: mov.dataHora
+    resultado.tipo = 'alvara_expedido';
+    resultado.data = mov.data;
+    resultado.prova = {
+      trecho: titulo.substring(0, 200),
+      movimento: mov
     };
 
-    // Identifica banco
-    if (termosBanco.bb.test(textoCompleto)) resultado.banco = "BB";
-    else if (termosBanco.cef.test(textoCompleto)) resultado.banco = "CEF";
+    // Detecta banco
+    resultado.banco = detectarBanco(titulo);
 
     // Extrai valor
-    const matchValor = textoCompleto.match(/r\$\s*([\d.,]+)/i);
-    if (matchValor) {
-      resultado.valor = `R$ ${matchValor[1]}`;
-      const valorNum = parseFloat(matchValor[1].replace(/\./g, '').replace(',', '.'));
-      if (!isNaN(valorNum)) resultado.valorCentavos = Math.round(valorNum * 100);
-    }
+    resultado.valorCentavos = extrairValor(titulo);
 
-    // Verifica código do alvará
-    if (/código|id.*alvará|alvará.*\d{5,}/i.test(textoCompleto)) {
-      resultado.temCodigoAlvara = true;
-    }
+    // Detecta código
+    const codigo = detectarCodigoAlvara(titulo);
+    resultado.temCodigoAlvara = codigo.tem;
+    resultado.codigoAlvara = codigo.codigo;
 
-    break; // Encontrou um válido
+    break;
   }
 
   return resultado;
 }
 
-// ===== Calcular Score do Lead =====
-function calcularScore(analise, idadeDias, temPFNomeada) {
-  let score = 0;
+// ===== Health & Info =====
+app.get("/", (_req, res) => res.send("TORRE v11.0 — Sistema de Leads Qualificados"));
 
-  // +40 se PF nomeada
-  if (temPFNomeada) score += 40;
+app.get("/health", (_req, res) => res.json({ 
+  ok: true, 
+  version: "11.0",
+  config: CONFIG,
+  apis: {
+    directData: DIRECTDATA_TOKEN ? "✅" : "❌",
+    infosimples: INFOSIMPLES_TOKEN ? "✅" : "❌"
+  },
+  now: new Date().toISOString() 
+}));
 
-  // +30 se banco identificado (BB ou CEF específico)
-  if (analise.banco === "BB" || analise.banco === "CEF") score += 30;
+app.get("/api/saude", (_req, res) => res.json({
+  ok: true,
+  version: "11.0",
+  config: CONFIG,
+  endpoints: [
+    "GET /api/leads-qualificados?tribunal=TRT1&limite=10&minScore=60",
+    "GET /api/dossie?processo=XXXXXXX",
+    "GET /api/telefone?cpf=XXXXXXXXXXX",
+    "POST /api/pdf"
+  ],
+  tribunaisDisponiveis: Object.keys(DATAJUD_ENDPOINTS),
+  now: new Date().toISOString()
+}));
 
-  // +20 se valor extraído
-  if (analise.valorCentavos && analise.valorCentavos > 0) score += 20;
-
-  // +10 se tem código do alvará
-  if (analise.temCodigoAlvara) score += 10;
-
-  // Ajuste por idade (se disponível)
-  if (idadeDias !== null && idadeDias !== undefined) {
-    // -20 se alvará muito antigo (> 2 anos)
-    if (idadeDias > 730) score -= 20;
-    // -10 se antigo (> 1 ano)
-    else if (idadeDias > 365) score -= 10;
-    // +10 se recente (< 90 dias)
-    else if (idadeDias < 90) score += 10;
-    // +5 se muito recente (< 30 dias)
-    if (idadeDias < 30) score += 5;
-  }
-
-  return Math.max(0, Math.min(100, score));
-}
-
-// ===== GET /api/leads-qualificados - Leads com valor CONFIRMADO ≥ R$ 20k =====
+// ===== GET /api/leads-qualificados - Leads com valor CONFIRMADO =====
 app.get("/api/leads-qualificados", async (req, res) => {
   const logs = [];
   const log = (msg) => { console.log(msg); logs.push(msg); };
 
   try {
-    const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
+    const tribunal = (req.query.tribunal || "TRT1").toUpperCase();
     const limite = Math.min(Number(req.query.limite) || 10, 30);
-    const minValor = Number(req.query.minValor) || 2000000; // 20k em centavos
-    const dias = Number(req.query.dias) || 180;
+    const minValor = Number(req.query.minValor) || CONFIG.MIN_VALOR_CENTAVOS;
+    const minScore = Number(req.query.minScore) || CONFIG.MIN_SCORE;
+    const maxIdade = Number(req.query.maxIdade) || CONFIG.MAX_IDADE_DIAS;
+    const modo = req.query.modo || "pf_core"; // pf_core | garimpo
 
-    log(`[qualificados] Buscando ${limite} leads ≥ ${centavosToBRL(minValor)} no ${tribunal}...`);
+    log(`[TORRE] Buscando ${limite} leads ≥ ${centavosToBRL(minValor)}, score ≥ ${minScore}, tribunal ${tribunal}...`);
 
-    // 1. Busca candidatos no DataJud (grátis)
+    if (!INFOSIMPLES_TOKEN) {
+      return res.status(400).json({ ok: false, error: "INFOSIMPLES_TOKEN não configurado" });
+    }
+
     const endpoint = DATAJUD_ENDPOINTS[tribunal];
     if (!endpoint) {
       return res.status(400).json({ ok: false, error: `Tribunal ${tribunal} não suportado` });
     }
 
+    // 1. Busca candidatos no DataJud
     const query = {
-      size: limite * 15, // Busca mais pra compensar filtros
+      size: limite * 20,
       query: {
         bool: {
           should: [
@@ -341,66 +406,61 @@ app.get("/api/leads-qualificados", async (req, res) => {
 
     const datajudResponse = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': DATAJUD_API_KEY
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': DATAJUD_API_KEY },
       body: JSON.stringify(query)
     });
 
     const datajudData = await datajudResponse.json();
     const candidatos = datajudData.hits?.hits || [];
-    log(`[qualificados] DataJud retornou ${candidatos.length} candidatos`);
+    log(`[TORRE] DataJud: ${candidatos.length} candidatos`);
 
-    // 2. Filtra pelo TORRE primeiro (grátis)
+    // 2. Filtro TORRE básico (DataJud)
     const processosVistos = new Set();
-    const candidatosTORRE = [];
+    const candidatosFiltrados = [];
 
     for (const hit of candidatos) {
       const src = hit._source;
       const processoNum = src.numeroProcesso;
-
       if (processosVistos.has(processoNum)) continue;
       processosVistos.add(processoNum);
 
-      const movimentos = src.movimentos || [];
-      const analise = analisarMovimentosTORRE(movimentos);
-
-      if (!analise.confirmado) continue;
-
-      const idadeDias = calcularIdadeDias(analise.dataAlvara);
-      if (idadeDias !== null && idadeDias > MAX_IDADE_DIAS) continue;
-
-      candidatosTORRE.push({
+      candidatosFiltrados.push({
         processo: formatarProcessoCNJ(processoNum),
         tribunal: src.tribunal || tribunal,
         grau: src.grau,
         vara: src.orgaoJulgador?.nome,
-        classe: src.classe?.nome,
-        analiseDataJud: analise
+        classe: src.classe?.nome
       });
     }
 
-    log(`[qualificados] ${candidatosTORRE.length} passaram no filtro TORRE`);
+    log(`[TORRE] Após dedup: ${candidatosFiltrados.length} candidatos`);
 
-    // 3. Consulta InfoSimples para cada candidato (R$ 0,20 cada)
+    // 3. Consulta InfoSimples e aplica filtros rigorosos
     const leadsQualificados = [];
+    const leadsGarimpo = []; // Velhos mas válidos
     let consultasInfoSimples = 0;
-    const descartados = { valorBaixo: 0, semValor: 0, erroConsulta: 0 };
+    const descartados = {
+      valorBaixo: 0,
+      semValor: 0,
+      erroConsulta: 0,
+      possivelPJ: 0,
+      saqueRealizado: 0,
+      scoreBaixo: 0,
+      muitoAntigo: 0
+    };
 
-    for (const candidato of candidatosTORRE) {
+    for (const candidato of candidatosFiltrados) {
       if (leadsQualificados.length >= limite) break;
 
       try {
-        log(`[qualificados] Consultando InfoSimples: ${candidato.processo}...`);
         consultasInfoSimples++;
-
         const url = `https://api.infosimples.com/api/v2/consultas/tribunal/trt/processo?numero_processo=${encodeURIComponent(candidato.processo)}&token=${INFOSIMPLES_TOKEN}`;
         const response = await fetch(url);
         const data = await response.json();
 
         if (data.code !== 200) {
           descartados.erroConsulta++;
+          log(`[TORRE] ❌ ${candidato.processo}: erro InfoSimples`);
           continue;
         }
 
@@ -408,14 +468,30 @@ app.get("/api/leads-qualificados", async (req, res) => {
         const detalhes = resultado.detalhes || {};
         const itens = resultado.itens || [];
 
-        // Extrai beneficiários PF
+        // Analisa movimentos
+        const analise = analisarMovimentoAlvara(itens);
+
+        // Descarta se saque já realizado
+        if (analise.saqueRealizado) {
+          descartados.saqueRealizado++;
+          log(`[TORRE] ❌ ${candidato.processo}: saque já realizado`);
+          continue;
+        }
+
+        // Descarta se PJ no movimento
+        if (analise.possivelPJ) {
+          descartados.possivelPJ++;
+          log(`[TORRE] ❌ ${candidato.processo}: possível PJ (${analise.beneficiarioNoMovimento})`);
+          continue;
+        }
+
+        // Extrai beneficiários PF do polo ativo
         const poloAtivo = detalhes.polo_ativo || [];
         const beneficiariosPF = poloAtivo.filter(p => {
-          const nome = (p.nome || "").toUpperCase();
-          const tipo = (p.tipo || "").toLowerCase();
-          if (nome.includes("LTDA") || nome.includes("S.A") || nome.includes("S/A") || 
-              nome.includes("EPP") || nome.includes("EIRELI") || nome.includes("MEI")) return false;
-          if (tipo.includes("advogado") || tipo.includes("patrono")) return false;
+          const nome = p.nome || '';
+          const tipo = (p.tipo || '').toLowerCase();
+          if (detectarPJ(nome)) return false;
+          if (tipo.includes('advogado') || tipo.includes('patrono')) return false;
           return true;
         }).map(p => ({
           nome: p.nome,
@@ -423,61 +499,85 @@ app.get("/api/leads-qualificados", async (req, res) => {
           advogados: (p.representantes || []).filter(r => r.tipo === "Advogado").map(r => r.nome)
         }));
 
-        // Busca movimentos de alvará
-        const movimentosAlvara = itens.filter(item => {
-          const titulo = (item.titulo || "").toLowerCase();
-          return titulo.includes('alvará') || titulo.includes('levantamento');
-        }).map(item => ({ data: item.data, titulo: item.titulo }));
-
-        // Extrai valor do alvará ou da causa
-        let valorCentavos = null;
+        // Extrai valores
+        let valorAlvaraCentavos = analise.valorCentavos;
+        let valorCausaCentavos = null;
         let fonteValor = null;
 
-        // Primeiro tenta extrair do movimento de alvará
-        const todosTextos = itens.map(i => i.titulo || "").join(" ");
-        const matchValorMov = todosTextos.match(/r\$\s*([\d.,]+)/i);
-        if (matchValorMov) {
-          const valorNum = parseFloat(matchValorMov[1].replace(/\./g, '').replace(',', '.'));
-          if (!isNaN(valorNum) && valorNum > 0) {
-            valorCentavos = Math.round(valorNum * 100);
-            fonteValor = "movimento";
-          }
+        // Valor da causa como fallback
+        if (detalhes.valor_causa) {
+          valorCausaCentavos = extrairValor(detalhes.valor_causa);
         }
 
-        // Se não achou, usa valor da causa
-        if (!valorCentavos && detalhes.valor_causa) {
-          const matchCausa = String(detalhes.valor_causa).match(/[\d.,]+/);
-          if (matchCausa) {
-            const valorNum = parseFloat(matchCausa[0].replace(/\./g, '').replace(',', '.'));
-            if (!isNaN(valorNum) && valorNum > 0) {
-              valorCentavos = Math.round(valorNum * 100);
-              fonteValor = "valor_causa";
-            }
-          }
+        // Define fonte do valor
+        if (valorAlvaraCentavos) {
+          fonteValor = "alvara";
+        } else if (valorCausaCentavos) {
+          fonteValor = "valor_causa";
         }
+
+        const valorFinal = valorAlvaraCentavos || valorCausaCentavos;
 
         // Filtra por valor mínimo
-        if (!valorCentavos) {
+        if (!valorFinal) {
           descartados.semValor++;
-          log(`[qualificados] ${candidato.processo}: sem valor encontrado`);
+          log(`[TORRE] ❌ ${candidato.processo}: sem valor`);
           continue;
         }
 
-        if (valorCentavos < minValor) {
+        if (valorFinal < minValor) {
           descartados.valorBaixo++;
-          log(`[qualificados] ${candidato.processo}: ${centavosToBRL(valorCentavos)} < ${centavosToBRL(minValor)}`);
+          log(`[TORRE] ❌ ${candidato.processo}: ${centavosToBRL(valorFinal)} < ${centavosToBRL(minValor)}`);
           continue;
         }
 
-        // LEAD QUALIFICADO! ✅
-        const idadeDias = calcularIdadeDias(movimentosAlvara[0]?.data || candidato.analiseDataJud.dataAlvara);
-        const score = calcularScore({
-          banco: candidato.analiseDataJud.banco,
-          valorCentavos,
-          temCodigoAlvara: candidato.analiseDataJud.temCodigoAlvara
-        }, idadeDias, beneficiariosPF.length > 0);
+        // Calcula idade
+        const idadeDias = calcularIdadeDias(analise.data);
 
-        log(`[qualificados] ✅ ${candidato.processo}: ${centavosToBRL(valorCentavos)} - QUALIFICADO!`);
+        // Muito antigo? Vai pro garimpo
+        if (idadeDias !== null && idadeDias > CONFIG.IDADE_GARIMPO_DIAS && modo !== 'garimpo') {
+          descartados.muitoAntigo++;
+          leadsGarimpo.push({ processo: candidato.processo, idadeDias, valor: centavosToBRL(valorFinal) });
+          log(`[TORRE] ⏳ ${candidato.processo}: muito antigo (${idadeDias} dias) → garimpo`);
+          continue;
+        }
+
+        // Descarta se acima do maxIdade (modo normal)
+        if (modo !== 'garimpo' && idadeDias !== null && idadeDias > maxIdade) {
+          descartados.muitoAntigo++;
+          log(`[TORRE] ❌ ${candidato.processo}: ${idadeDias} dias > ${maxIdade}`);
+          continue;
+        }
+
+        // Detecta banco em todos os textos
+        let bancoDetectado = analise.banco;
+        if (!bancoDetectado) {
+          const todosTextos = itens.map(i => i.titulo || '').join(' ');
+          bancoDetectado = detectarBanco(todosTextos);
+        }
+
+        // Calcula score refinado
+        const scoreResult = calcularScoreRefinado({
+          pfNomeadaNoMovimento: !!analise.beneficiarioNoMovimento && !detectarPJ(analise.beneficiarioNoMovimento),
+          bancoDetectado,
+          valorDoAlvara: !!valorAlvaraCentavos,
+          valorDaCausa: !!valorCausaCentavos && !valorAlvaraCentavos,
+          idadeDias,
+          temCodigoAlvara: analise.temCodigoAlvara,
+          possivelPJ: false
+        });
+
+        // Filtra por score mínimo
+        if (scoreResult.score < minScore) {
+          descartados.scoreBaixo++;
+          log(`[TORRE] ❌ ${candidato.processo}: score ${scoreResult.score} < ${minScore}`);
+          continue;
+        }
+
+        // ✅ LEAD QUALIFICADO!
+        log(`[TORRE] ✅ ${candidato.processo}: ${centavosToBRL(valorFinal)} | score ${scoreResult.score} | ${idadeDias || '?'} dias`);
+
+        const primeiroNome = beneficiariosPF[0]?.nome?.split(' ')[0] || 'Sr(a)';
 
         leadsQualificados.push({
           processo: candidato.processo,
@@ -486,29 +586,37 @@ app.get("/api/leads-qualificados", async (req, res) => {
           vara: candidato.vara,
           classe: candidato.classe,
 
-          // Valor CONFIRMADO
+          // Valor
           valor: {
-            centavos: valorCentavos,
-            formatado: centavosToBRL(valorCentavos),
-            fonte: fonteValor
+            centavos: valorFinal,
+            formatado: centavosToBRL(valorFinal),
+            fonte: fonteValor,
+            alvaraCentavos: valorAlvaraCentavos,
+            causaCentavos: valorCausaCentavos
           },
 
           // Alvará
           alvara: {
-            confirmado: true,
-            tipo: candidato.analiseDataJud.tipo,
-            data: movimentosAlvara[0]?.data || candidato.analiseDataJud.dataAlvara,
-            banco: candidato.analiseDataJud.banco,
-            movimentos: movimentosAlvara.slice(0, 3)
+            confirmado: analise.confirmado,
+            tipo: analise.tipo,
+            data: analise.data,
+            banco: bancoDetectado,
+            temCodigoAlvara: analise.temCodigoAlvara,
+            codigoAlvara: analise.codigoAlvara
           },
+
+          // Prova (para auditoria)
+          prova: analise.prova,
 
           // Beneficiários
           beneficiariosPF,
+          beneficiarioNoMovimento: analise.beneficiarioNoMovimento,
           pfNomeada: beneficiariosPF.length > 0,
 
           // Métricas
           idadeAlvaraDias: idadeDias,
-          score,
+          score: scoreResult.score,
+          scoreDetalhes: scoreResult.detalhes,
 
           // Links
           links: {
@@ -517,44 +625,55 @@ app.get("/api/leads-qualificados", async (req, res) => {
           },
 
           // Mensagem de pitch
-          mensagem: beneficiariosPF[0] ? 
-            `Oi ${beneficiariosPF[0].nome?.split(' ')[0]}, identifiquei no ${tribunal} um alvará de ${centavosToBRL(valorCentavos)} no proc. ${candidato.processo} em seu nome. Posso te explicar em 2 min como sacar? Cobro só no êxito.`
-            : null,
+          mensagem: fonteValor === 'alvara' 
+            ? `Oi ${primeiroNome}, identifiquei no ${tribunal} um alvará de ${centavosToBRL(valorFinal)} no proc. ${candidato.processo} em seu nome. Posso te explicar em 2 min como sacar? Cobro só no êxito.`
+            : `Oi ${primeiroNome}, vi no ${tribunal} movimentação de alvará no proc. ${candidato.processo}. O valor da causa é ${centavosToBRL(valorFinal)}, mas preciso verificar o valor exato liberado. Posso checar sem custo?`,
 
           // Contato
           contato: {
-            status: DIRECTDATA_TOKEN ? "aguardando_enriquecimento" : "aguardando_directdata"
+            status: DIRECTDATA_TOKEN ? "aguardando_enriquecimento" : "aguardando_directdata",
+            telefone: null,
+            whatsapp: null,
+            email: null
           }
         });
 
       } catch (e) {
         descartados.erroConsulta++;
-        log(`[qualificados] Erro ao consultar ${candidato.processo}: ${e.message}`);
+        log(`[TORRE] ❌ ${candidato.processo}: erro ${e.message}`);
       }
     }
 
-    // Ordena por valor DESC
-    leadsQualificados.sort((a, b) => b.valor.centavos - a.valor.centavos);
+    // Ordena por score DESC, depois valor DESC
+    leadsQualificados.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.valor.centavos - a.valor.centavos;
+    });
 
     const custoInfoSimples = consultasInfoSimples * 0.20;
 
     res.json({
       ok: true,
       tribunal,
-      filtro: {
+      modo,
+      filtros: {
         minValor: centavosToBRL(minValor),
-        dias,
-        tipo: "TORRE + Valor Confirmado"
+        minScore,
+        maxIdade: `${maxIdade} dias`
       },
       estatisticas: {
         candidatosDataJud: candidatos.length,
-        passaramTORRE: candidatosTORRE.length,
         consultasInfoSimples,
         custoInfoSimples: `R$ ${custoInfoSimples.toFixed(2)}`,
         qualificados: leadsQualificados.length,
         descartados
       },
       leads: leadsQualificados,
+      garimpo: leadsGarimpo.length > 0 ? {
+        total: leadsGarimpo.length,
+        amostra: leadsGarimpo.slice(0, 5),
+        mensagem: "Leads antigos (>720 dias). Use modo=garimpo para buscar."
+      } : null,
       logs
     });
 
@@ -562,390 +681,9 @@ app.get("/api/leads-qualificados", async (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e), logs });
   }
 });
-
-// ===== GET /api/leads - Busca leads CONFIRMADOS =====
-app.get("/api/leads", async (req, res) => {
-  const logs = [];
-  const log = (msg) => { console.log(msg); logs.push(msg); };
-
-  try {
-    const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
-    const limite = Math.min(Number(req.query.limite) || 20, 100);
-    const dias = Number(req.query.dias) || 180;
-    const minScore = Number(req.query.minScore) || 0; // Removido filtro padrão
-    const minValor = Number(req.query.minValor) || 0;
-    const modo = req.query.modo || "trt_pf_core";
-
-    log(`[leads] Buscando no ${tribunal} (últimos ${dias} dias, modo=${modo})...`);
-
-    const endpoint = DATAJUD_ENDPOINTS[tribunal];
-    if (!endpoint) {
-      return res.status(400).json({ ok: false, error: `Tribunal ${tribunal} não suportado` });
-    }
-
-    // Query DataJud - CORRIGIDA
-    const query = {
-      size: limite * 10, // Busca mais para compensar filtros
-      query: {
-        bool: {
-          should: [
-            { match: { "movimentos.nome": "alvará" } },
-            { match: { "movimentos.nome": "levantamento" } },
-            { match: { "movimentos.complementosTabelados.nome": "Alvará" } },
-            { match_phrase: { "movimentos.nome": "Expedição de documento" } },
-          ],
-          minimum_should_match: 1
-        }
-      },
-      sort: [{ "dataHoraUltimaAtualizacao": { order: "desc" } }]
-    };
-
-    const datajudResponse = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': DATAJUD_API_KEY
-      },
-      body: JSON.stringify(query)
-    });
-
-    const datajudData = await datajudResponse.json();
-    log(`[leads] DataJud retornou ${datajudData.hits?.hits?.length || 0} processos`);
-
-    // Aplica FILTRO TORRE
-    const leadsConfirmados = [];
-    const descartados = { baixado: 0, advogado: 0, ruido: 0, antigo: 0, scoreBaixo: 0, duplicado: 0 };
-    const processosVistos = new Set(); // Para deduplicação
-
-    for (const hit of (datajudData.hits?.hits || [])) {
-      const src = hit._source;
-      const movimentos = src.movimentos || [];
-      const processoNum = src.numeroProcesso;
-
-      // Deduplicação por processo
-      if (processosVistos.has(processoNum)) {
-        descartados.duplicado++;
-        continue;
-      }
-      processosVistos.add(processoNum);
-
-      const analise = analisarMovimentosTORRE(movimentos);
-
-      if (!analise.confirmado) {
-        if (analise.motivoDescarte?.includes('cumprido')) descartados.baixado++;
-        else if (analise.motivoDescarte?.includes('advogado')) descartados.advogado++;
-        else descartados.ruido++;
-        continue;
-      }
-
-      const idadeDias = calcularIdadeDias(analise.dataAlvara);
-
-      // Filtro de idade (só aplica se conseguiu calcular)
-      if (idadeDias !== null && idadeDias > MAX_IDADE_DIAS) {
-        descartados.antigo++;
-        continue;
-      }
-
-      const score = calcularScore(analise, idadeDias, true);
-
-      // Filtro de score
-      if (score < minScore) {
-        descartados.scoreBaixo++;
-        continue;
-      }
-
-      // Filtro de valor mínimo
-      if (minValor > 0 && analise.valorCentavos && analise.valorCentavos < minValor) {
-        continue;
-      }
-
-      leadsConfirmados.push({
-        processo: formatarProcessoCNJ(src.numeroProcesso),
-        tribunal: src.tribunal || tribunal,
-        grau: src.grau,
-        vara: src.orgaoJulgador?.nome,
-        classe: src.classe?.nome,
-        ultimaAtualizacao: src.dataHoraUltimaAtualizacao,
-
-        // Dados do alvará
-        alvara: {
-          confirmado: true,
-          tipo: analise.tipo,
-          data: analise.dataAlvara,
-          banco: analise.banco,
-          valor: analise.valor,
-          valorCentavos: analise.valorCentavos,
-          temCodigoAlvara: analise.temCodigoAlvara,
-          movimento: analise.movimentoAlvara
-        },
-
-        // Métricas
-        idadeAlvaraDias: idadeDias,
-        score,
-
-        // URLs
-        urlPje: `https://pje.${tribunal.toLowerCase()}.jus.br/consultaprocessual/detalhe-processo/${src.numeroProcesso}`,
-        urlDossie: `/api/dossie?processo=${src.numeroProcesso}`
-      });
-
-      if (leadsConfirmados.length >= limite) break;
-    }
-
-    // Ordena por score DESC, depois por data DESC
-    leadsConfirmados.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return new Date(b.alvara.data || 0) - new Date(a.alvara.data || 0);
-    });
-
-    log(`[leads] ${leadsConfirmados.length} leads CONFIRMADOS após filtro TORRE`);
-
-    res.json({
-      ok: true,
-      tribunal,
-      filtro: {
-        dias,
-        minScore,
-        minValor: minValor > 0 ? centavosToBRL(minValor) : "sem filtro",
-        tipo: "TORRE — Só Confirmados"
-      },
-      estatisticas: {
-        totalDataJud: datajudData.hits?.hits?.length || 0,
-        confirmados: leadsConfirmados.length,
-        descartados
-      },
-      leads: leadsConfirmados,
-      proximoPasso: leadsConfirmados.length > 0
-        ? "Chame /api/dossie?processo=XXX para cada lead"
-        : "Nenhum lead confirmado. Tente outro tribunal ou reduza minScore.",
-      logs
-    });
-
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
-  }
-});
-
-// ===== GET /api/dossie - Gera dossiê completo =====
-app.get("/api/dossie", async (req, res) => {
-  const logs = [];
-  const log = (msg) => { console.log(msg); logs.push(msg); };
-
-  try {
-    const processo = req.query.processo;
-    if (!processo) {
-      return res.status(400).json({ ok: false, error: "Parâmetro 'processo' é obrigatório" });
-    }
-
-    const numeroLimpo = processo.replace(/\D/g, '');
-    const numeroCNJ = formatarProcessoCNJ(numeroLimpo);
-
-    log(`[dossie] Consultando InfoSimples para ${numeroCNJ}...`);
-
-    // Consulta InfoSimples
-    const url = `https://api.infosimples.com/api/v2/consultas/tribunal/trt/processo?numero_processo=${encodeURIComponent(numeroCNJ)}&token=${INFOSIMPLES_TOKEN}`;
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.code !== 200) {
-      return res.json({
-        ok: false,
-        error: data.code_message || "Erro na consulta InfoSimples",
-        logs
-      });
-    }
-
-    const resultado = data.data?.[0] || {};
-    const detalhes = resultado.detalhes || {};
-    const itens = resultado.itens || [];
-
-    // Extrai partes
-    const poloAtivo = detalhes.polo_ativo || [];
-    const poloPassivo = detalhes.polo_passivo || [];
-
-    // Filtra só PF (não advogado, não CNPJ)
-    const beneficiariosPF = poloAtivo.filter(p => {
-      const nome = (p.nome || "").toUpperCase();
-      const tipo = (p.tipo || "").toLowerCase();
-      // Exclui empresas
-      if (nome.includes("LTDA") || nome.includes("S.A") || nome.includes("S/A") || 
-          nome.includes("EPP") || nome.includes("EIRELI") || nome.includes("MEI")) return false;
-      // Exclui advogados
-      if (tipo.includes("advogado") || tipo.includes("patrono")) return false;
-      return true;
-    }).map(p => ({
-      nome: p.nome,
-      tipo: p.tipo,
-      advogados: (p.representantes || []).filter(r => r.tipo === "Advogado").map(r => r.nome)
-    }));
-
-    // Analisa movimentos para alvará
-    const movimentosAlvara = itens.filter(item => {
-      const titulo = (item.titulo || "").toLowerCase();
-      return titulo.includes('alvará') ||
-             titulo.includes('levantamento') ||
-             titulo.includes('liberação de valores');
-    }).map(item => ({
-      data: item.data,
-      titulo: item.titulo,
-      id: item.id_documento
-    }));
-
-    // Analisa se tem alvará confirmado
-    const analise = {
-      confirmado: movimentosAlvara.length > 0,
-      tipo: movimentosAlvara.length > 0 ? "alvara_expedido" : null,
-      dataAlvara: movimentosAlvara[0]?.data,
-      banco: null,
-      valor: null,
-      valorCentavos: null
-    };
-
-    // Extrai valor
-    const todosTextos = itens.map(i => i.titulo || "").join(" ");
-    const matchValor = todosTextos.match(/r\$\s*([\d.,]+)/i);
-    if (matchValor) {
-      analise.valor = `R$ ${matchValor[1]}`;
-      const valorNum = parseFloat(matchValor[1].replace(/\./g, '').replace(',', '.'));
-      if (!isNaN(valorNum)) analise.valorCentavos = Math.round(valorNum * 100);
-    }
-
-    // Identifica banco
-    if (/banco do brasil|bb\b/i.test(todosTextos)) analise.banco = "BB";
-    else if (/caixa econ|cef\b/i.test(todosTextos)) analise.banco = "CEF";
-
-    const idadeDias = calcularIdadeDias(analise.dataAlvara);
-    const score = calcularScore(analise, idadeDias || 0, beneficiariosPF.length > 0);
-
-    // Ticket estimado (usa valor do alvará ou valor da causa)
-    let ticketEstimadoCentavos = analise.valorCentavos;
-    if (!ticketEstimadoCentavos && detalhes.valor_causa) {
-      const matchCausa = String(detalhes.valor_causa).match(/[\d.,]+/);
-      if (matchCausa) {
-        const valorNum = parseFloat(matchCausa[0].replace(/\./g, '').replace(',', '.'));
-        if (!isNaN(valorNum)) ticketEstimadoCentavos = Math.round(valorNum * 100);
-      }
-    }
-
-    // Exclusões avaliadas (para auditoria)
-    const exclusoesAvaliadas = [
-      `saque_efetuado:${movimentosAlvara.some(m => /cumprido|levantado|pago/i.test(m.titulo))}`,
-      `beneficiario_pf:${beneficiariosPF.length > 0}`,
-      `banco_identificado:${!!analise.banco}`,
-      `valor_presente:${!!analise.valorCentavos}`
-    ];
-
-    // Monta dossiê
-    const dossie = {
-      processo: numeroCNJ,
-      tribunal: resultado.trt || "TRT15",
-      grau: "G1",
-      vara: detalhes.orgao_julgador,
-      classe: detalhes.processo?.split(" ")[0],
-      valorCausa: detalhes.valor_causa || detalhes.normalizado_valor_causa,
-
-      // Beneficiários PF
-      beneficiariosPF,
-      pfNomeada: beneficiariosPF.length > 0,
-
-      // Reclamados
-      reclamados: poloPassivo.map(p => ({ nome: p.nome, tipo: p.tipo })),
-
-      // Análise do Alvará
-      alvara: {
-        confirmado: analise.confirmado,
-        tipo: analise.tipo,
-        data: analise.dataAlvara,
-        dataIso: dataParaISO(analise.dataAlvara),
-        banco: analise.banco,
-        valor: analise.valor,
-        valorCentavos: analise.valorCentavos,
-        temCodigoAlvara: /código|guia|id.*alvará/i.test(todosTextos),
-        movimentos: movimentosAlvara.slice(0, 5)
-      },
-
-      // Métricas
-      idadeAlvaraDias: idadeDias,
-      score,
-      ticketEstimadoCentavos,
-      
-      // Auditoria
-      exclusoesAvaliadas,
-
-      // Status
-      status: !analise.confirmado ? "sem_alvara_confirmado"
-            : !DIRECTDATA_TOKEN ? "alvara_confirmado_aguardando_telefone"
-            : "pronto_para_contato",
-
-      // Links
-      links: {
-        pje: `https://pje.trt15.jus.br/consultaprocessual/detalhe-processo/${numeroLimpo}`,
-        comprovante: resultado.site_receipt
-      },
-
-      // Mensagens de Pitch
-      mensagens: gerarMensagensPitch(beneficiariosPF[0], numeroCNJ, analise, ticketEstimadoCentavos),
-
-      // Contato (a ser preenchido)
-      contato: {
-        status: DIRECTDATA_TOKEN ? "aguardando_enriquecimento" : "aguardando_directdata",
-        telefone: null,
-        whatsapp: null,
-        email: null,
-        endereco: null
-      },
-
-      geradoEm: new Date().toISOString()
-    };
-
-    log(`[dossie] Score: ${score}, Confirmado: ${analise.confirmado}`);
-
-    res.json({ ok: true, dossie, logs });
-
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
-  }
-});
-
-// ===== Gerar Mensagens de Pitch =====
-function gerarMensagensPitch(beneficiario, processo, analise, ticketCentavos) {
-  const nome = beneficiario?.nome || "Sr(a)";
-  const primeiroNome = nome.split(' ')[0];
-  const banco = analise.banco || "BB/CEF";
-  const valor = analise.valor || (ticketCentavos ? centavosToBRL(ticketCentavos) : null);
-
-  if (!analise.confirmado) {
-    return {
-      tipo: "sem_alvara",
-      alerta: "⚠️ Sem alvará confirmado. NÃO ABORDAR."
-    };
-  }
-
-  return {
-    tipo: "confirmado",
-    alerta: "✅ ALVARÁ CONFIRMADO — Pode usar pitch direto!",
-
-    // Pitch principal
-    abertura: `Oi ${primeiroNome}, identifiquei no TRT um alvará já expedido no proc. ${processo}${valor ? ` (${valor})` : ''} em seu nome. Posso te explicar em 2 min como sacar? Cobro só no êxito.`,
-
-    // Se responder sim
-    seResponderSim: `Ótimo! O processo é rápido:\n\n1️⃣ Verifico seu processo e preparo a documentação\n2️⃣ Você vai na agência ${banco} com RG, CPF e comprovante de endereço\n3️⃣ O dinheiro cai em 3-7 dias úteis\n4️⃣ Só então você me paga 15%\n\nPosso começar agora?`,
-
-    // Se pedir prova
-    sePedirProva: `Segue link oficial do tribunal: https://pje.trt15.jus.br/consultaprocessual/detalhe-processo/${processo.replace(/\D/g, '')}\n\nPosso gerar PDF com QR code pra você verificar.`,
-
-    // Follow-up
-    followUp: `Sem custo pra conferir valor e banco. Se estiver liberado, você só paga após o crédito na sua conta.`,
-
-    // Fechamento
-    fechamento: `Combinado! Me manda foto do RG e CPF + comprovante de endereço que eu preparo tudo. Qualquer dúvida é só chamar! 🤝`
-  };
-}
 
 // ===== GET /api/telefone - Consulta Direct Data =====
 app.get("/api/telefone", async (req, res) => {
-  const logs = [];
-  const log = (msg) => { console.log(msg); logs.push(msg); };
-
   try {
     const cpf = req.query.cpf;
     const nome = req.query.nome;
@@ -958,31 +696,20 @@ app.get("/api/telefone", async (req, res) => {
       return res.json({
         ok: false,
         status: "aguardando_directdata",
-        error: "Token Direct Data não configurado. Aguardando aprovação da conta.",
-        instrucoes: "Após receber o token, configure DIRECTDATA_TOKEN no Railway",
-        logs
+        error: "Token Direct Data não configurado"
       });
     }
 
     const cpfLimpo = cpf ? cpf.replace(/\D/g, '') : '';
-
-    log(`[directdata] Consultando CPF ${cpfLimpo}...`);
-
     const url = `https://apiv3.directd.com.br/api/CadastroPessoaFisicaPlus?CPF=${cpfLimpo}&TOKEN=${DIRECTDATA_TOKEN}`;
     const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
     const data = await response.json();
 
     if (data.metaDados?.resultado !== "Sucesso") {
-      return res.json({
-        ok: false,
-        error: data.metaDados?.mensagem || "Erro na consulta",
-        logs
-      });
+      return res.json({ ok: false, error: data.metaDados?.mensagem || "Erro" });
     }
 
     const retorno = data.retorno || {};
-
-    // Extrai telefones
     const telefones = (retorno.telefones || []).map(t => ({
       numero: t.telefoneComDDD,
       tipo: t.tipoTelefone,
@@ -991,55 +718,39 @@ app.get("/api/telefone", async (req, res) => {
       bloqueado: t.telemarketingBloqueado
     }));
 
-    // Filtra WhatsApp não bloqueado
     const telefonesWhatsApp = telefones.filter(t => t.whatsapp && !t.bloqueado);
 
     res.json({
       ok: true,
       cpf: retorno.cpf,
       nome: retorno.nome,
-      dataNascimento: retorno.dataNascimento,
-      nomeMae: retorno.nomeMae,
-
       telefones,
       telefonesWhatsApp,
       melhorTelefone: telefonesWhatsApp[0]?.numero || telefones[0]?.numero,
-
       endereco: (retorno.enderecos || [])[0],
-      emails: (retorno.emails || []).map(e => e.enderecoEmail),
-
-      rendaEstimada: retorno.rendaEstimada,
-      faixaSalarial: retorno.rendaFaixaSalarial,
-
-      logs
+      emails: (retorno.emails || []).map(e => e.enderecoEmail)
     });
 
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// ===== POST /api/pdf - Gera PDF do Dossiê =====
+// ===== POST /api/pdf - Gera dossiê PDF =====
 app.post("/api/pdf", async (req, res) => {
   try {
-    const {
-      tribunal, vara, processo, data_ato, pf_nome,
-      valor_brl, tipo_ato, banco_pagador, id_ato,
-      fee_percent, link_pje
-    } = req.body || {};
+    const { tribunal, vara, processo, data_ato, pf_nome, valor_brl, tipo_ato, banco_pagador, id_ato, fee_percent, link_pje } = req.body || {};
 
     if (!processo || !pf_nome) {
       return res.status(400).json({ ok: false, error: "Campos obrigatórios: processo, pf_nome" });
     }
 
-    // Gera QR Code
     let qrcodeDataUrl = "";
     const link = link_pje || id_ato || "";
     if (link) {
       try { qrcodeDataUrl = await QRCode.toDataURL(link, { margin: 0 }); } catch {}
     }
 
-    // Template HTML
     const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -1076,7 +787,6 @@ app.post("/api/pdf", async (req, res) => {
         <div class="mono">${safe(data_ato)}</div>
       </div>
     </div>
-
     <div class="row" style="margin-top:10px;">
       <div>
         <div class="muted">PROCESSO</div>
@@ -1087,10 +797,8 @@ app.post("/api/pdf", async (req, res) => {
         <div class="mono">${safe(pf_nome)}</div>
       </div>
     </div>
-
     <h2>STATUS</h2>
-    <div class="badge">${safe(valor_brl || "VALOR A CONFIRMAR")} &nbsp;|&nbsp; ${safe(tipo_ato || "ALVARÁ")} EXPEDIDO EM NOME DA PF</div>
-
+    <div class="badge">${safe(valor_brl || "VALOR A CONFIRMAR")} | ${safe(tipo_ato || "ALVARÁ")} EXPEDIDO</div>
     <h2>PROVA (VERIFICAÇÃO OFICIAL)</h2>
     <div class="box">
       <div class="row" style="align-items:center;">
@@ -1100,8 +808,8 @@ app.post("/api/pdf", async (req, res) => {
           <div class="hr"></div>
           <div class="muted">Como verificar:</div>
           <ul>
-            <li>Acesse o portal do Tribunal (ou pesquise pelo nº do processo).</li>
-            <li>Confirme a <b>expedição de e-Alvará/levantamento</b> e o <b>nome da PF</b>.</li>
+            <li>Acesse o portal do Tribunal</li>
+            <li>Confirme a expedição e o nome da PF</li>
           </ul>
         </div>
         <div>
@@ -1110,47 +818,38 @@ app.post("/api/pdf", async (req, res) => {
         </div>
       </div>
     </div>
-
     <h2>LEVANTAMENTO (BB/CEF)</h2>
     <div class="box">
       <div class="muted">Banco pagador</div>
       <div class="mono">${safe(banco_pagador || "BB/CEF")}</div>
       <div class="hr"></div>
       <ul>
-        <li>Levar <b>RG/CPF</b>, <b>nº do processo</b> e <b>código/ID do e-Alvará</b>.</li>
-        <li>Agência com <b>tesouraria/gerência</b> agiliza o atendimento.</li>
-        <li>Prazo prático: <b>3–7 dias</b> (casos pontuais até 15).</li>
+        <li>Levar RG/CPF, nº do processo e código do alvará</li>
+        <li>Agência com tesouraria/gerência agiliza</li>
+        <li>Prazo: 3-7 dias úteis</li>
       </ul>
     </div>
-
-    <h2>REMUNERAÇÃO (PÓS-CRÉDITO)</h2>
+    <h2>REMUNERAÇÃO</h2>
     <div class="box">
       <ul>
         <li>Sem adiantamento. Sem senha. Sem procuração.</li>
-        <li>Você só me paga <b>${safe(fee_percent || "15")}%</b> após o crédito cair na sua conta.</li>
-        <li>Emitimos recibo no ato do pagamento do fee.</li>
+        <li>Você só paga <b>${safe(fee_percent || "15")}%</b> após o crédito cair.</li>
       </ul>
     </div>
-
     <div class="hr"></div>
     <div class="foot">
-      Operação TORRE — Dossiê PF e-Alvará (TRT/TJ). Documento informativo; não há prestação de serviços jurídicos.
-      <br/>Reforço anti-golpe: nunca solicitamos adiantamento. Verifique o ato pelo QR/URL acima.
+      TORRE v11.0 — Dossiê PF e-Alvará. Documento informativo.<br/>
+      Nunca solicitamos adiantamento. Verifique pelo QR/URL acima.
     </div>
   </div>
 </body>
 </html>`;
 
-    // Salva HTML
     const fileName = `dossie-${Date.now()}.html`;
     const filePath = path.join(PDF_DIR, fileName);
     await fsp.writeFile(filePath, html, 'utf8');
 
-    res.json({
-      ok: true,
-      html: `${BASE_URL}/pdf/${fileName}`,
-      mensagem: "HTML gerado com sucesso."
-    });
+    res.json({ ok: true, html: `${BASE_URL}/pdf/${fileName}` });
 
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -1158,4 +857,4 @@ app.post("/api/pdf", async (req, res) => {
 });
 
 // ===== Start =====
-app.listen(PORT, () => console.log(`TORRE v10.0 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`TORRE v11.0 rodando na porta ${PORT}`));
