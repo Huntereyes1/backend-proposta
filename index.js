@@ -407,6 +407,7 @@ app.get("/debug/datajud", async (req, res) => {
   try {
     const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
     const processo = req.query.processo || null;
+    const buscarAlvaras = req.query.alvaras === "1" || req.query.alvaras === "true";
     const limite = Number(req.query.limite) || 10;
     
     const endpoint = DATAJUD_ENDPOINTS[tribunal];
@@ -415,7 +416,6 @@ app.get("/debug/datajud", async (req, res) => {
     }
     
     log(`[datajud] Buscando no ${tribunal}...`);
-    log(`[datajud] Endpoint: ${endpoint}`);
     
     let query;
     
@@ -430,8 +430,29 @@ app.get("/debug/datajud", async (req, res) => {
           }
         }
       };
+    } else if (buscarAlvaras) {
+      // Busca por movimentos que contenham termos de alvará/levantamento
+      log(`[datajud] Buscando movimentos de alvará/levantamento...`);
+      query = {
+        size: limite,
+        query: {
+          bool: {
+            should: [
+              { match: { "movimentos.nome": "alvará" } },
+              { match: { "movimentos.nome": "levantamento" } },
+              { match: { "movimentos.nome": "liberação" } },
+              { match: { "movimentos.nome": "pagamento" } },
+              { match: { "movimentos.nome": "expedição" } }
+            ],
+            minimum_should_match: 1
+          }
+        },
+        sort: [
+          { "dataHoraUltimaAtualizacao": { order: "desc" } }
+        ]
+      };
     } else {
-      // Busca processos recentes (últimos 30 dias)
+      // Busca processos recentes
       log(`[datajud] Buscando processos recentes...`);
       query = {
         size: limite,
@@ -467,40 +488,48 @@ app.get("/debug/datajud", async (req, res) => {
     // Extrai processos encontrados
     const processos = (data.hits?.hits || []).map(hit => {
       const src = hit._source || {};
+      
+      // Filtra movimentos relevantes (alvará, levantamento, etc)
+      const movimentosRelevantes = (src.movimentos || []).filter(m => {
+        const nome = (m.nome || "").toLowerCase();
+        return nome.includes('alvará') || nome.includes('alvara') ||
+               nome.includes('levantamento') || nome.includes('liberação') ||
+               nome.includes('liberacao') || nome.includes('pagamento') ||
+               nome.includes('expedição') || nome.includes('expedicao') ||
+               nome.includes('depósito') || nome.includes('deposito');
+      });
+      
       return {
         processo: src.numeroProcesso,
+        processoCNJ: formatarProcessoCNJ(src.numeroProcesso),
         classe: src.classe?.nome,
-        assuntos: (src.assuntos || []).map(a => a.nome).join(", "),
+        assuntos: (src.assuntos || []).map(a => a.nome).slice(0, 3).join(", "),
         dataAjuizamento: src.dataAjuizamento,
+        ultimaAtualizacao: src.dataHoraUltimaAtualizacao,
         tribunal: src.tribunal,
         grau: src.grau,
         orgaoJulgador: src.orgaoJulgador?.nome,
-        formatoProcesso: src.formato,
-        // Partes do processo
-        partes: (src.partes || []).slice(0, 5).map(p => ({
-          tipo: p.tipo,
-          nome: p.nome,
-          documento: p.numeroDocumentoPrincipal
-        })),
-        // Movimentos (se existirem)
-        movimentos: (src.movimentos || []).slice(0, 10).map(m => ({
+        totalMovimentos: (src.movimentos || []).length,
+        movimentosRelevantes: movimentosRelevantes.slice(0, 5).map(m => ({
           nome: m.nome,
           data: m.dataHora,
-          complemento: (m.complementosTabelados || []).map(c => c.nome).join(", ")
-        }))
+          complementos: (m.complementosTabelados || []).map(c => c.nome).join(", ")
+        })),
+        temAlvara: movimentosRelevantes.length > 0
       };
     });
     
-    // Mostra estrutura de um processo para debug
-    const exemploCompleto = data.hits?.hits?.[0]?._source || null;
+    // Filtra só os que têm movimentos relevantes se buscarAlvaras
+    const processosFinais = buscarAlvaras 
+      ? processos.filter(p => p.temAlvara)
+      : processos;
     
     res.json({
       ok: true,
       tribunal,
       totalHits: data.hits?.total?.value || 0,
-      processos,
-      camposDisponiveis: exemploCompleto ? Object.keys(exemploCompleto) : [],
-      exemploMovimentos: exemploCompleto?.movimentos?.slice(0, 3) || [],
+      processosComAlvara: processosFinais.filter(p => p.temAlvara).length,
+      processos: processosFinais,
       logs
     });
     
@@ -508,6 +537,14 @@ app.get("/debug/datajud", async (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e), logs });
   }
 });
+
+// Formata número de processo para padrão CNJ (0000000-00.0000.0.00.0000)
+function formatarProcessoCNJ(numero) {
+  if (!numero) return null;
+  const n = numero.replace(/\D/g, '');
+  if (n.length !== 20) return numero;
+  return `${n.slice(0,7)}-${n.slice(7,9)}.${n.slice(9,13)}.${n.slice(13,14)}.${n.slice(14,16)}.${n.slice(16,20)}`;
+}
 
 // ===== DJEN (Diário de Justiça Eletrônico Nacional) =====
 const DJEN_URL = "https://comunica.pje.jus.br/";
