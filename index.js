@@ -492,13 +492,32 @@ app.get("/debug/datajud", async (req, res) => {
       // Filtra movimentos relevantes (alvará, levantamento, etc)
       const movimentosRelevantes = (src.movimentos || []).filter(m => {
         const nome = (m.nome || "").toLowerCase();
-        return nome.includes('alvará') || nome.includes('alvara') ||
-               nome.includes('levantamento') || nome.includes('liberação') ||
-               nome.includes('liberacao') || nome.includes('pagamento') ||
-               nome.includes('expedição') || nome.includes('expedicao') ||
-               nome.includes('depósito') || nome.includes('deposito');
+        const complementos = (m.complementosTabelados || []).map(c => (c.nome || "").toLowerCase()).join(" ");
+        
+        // Verifica se é alvará real (não apenas "expedição de documento")
+        const isAlvara = 
+          nome.includes('alvará') || nome.includes('alvara') ||
+          complementos.includes('alvará') || complementos.includes('alvara') ||
+          nome.includes('levantamento') || complementos.includes('levantamento') ||
+          (nome.includes('liberação') && !nome.includes('vista')) ||
+          (complementos.includes('liberação') && !complementos.includes('vista')) ||
+          nome.includes('pagamento ao credor') ||
+          nome.includes('depósito judicial') ||
+          complementos.includes('guia de levantamento');
+        
+        return isAlvara;
       });
       
+      // Marca se tem alvará REAL (não só expedição genérica)
+      const temAlvaraReal = movimentosRelevantes.some(m => {
+        const nome = (m.nome || "").toLowerCase();
+        const complementos = (m.complementosTabelados || []).map(c => (c.nome || "").toLowerCase()).join(" ");
+        return nome.includes('alvará') || nome.includes('alvara') ||
+               complementos.includes('alvará') || complementos.includes('alvara') ||
+               nome.includes('levantamento') || complementos.includes('levantamento') ||
+               complementos.includes('guia de levantamento');
+      });
+
       return {
         processo: src.numeroProcesso,
         processoCNJ: formatarProcessoCNJ(src.numeroProcesso),
@@ -515,20 +534,29 @@ app.get("/debug/datajud", async (req, res) => {
           data: m.dataHora,
           complementos: (m.complementosTabelados || []).map(c => c.nome).join(", ")
         })),
-        temAlvara: movimentosRelevantes.length > 0
+        temAlvara: movimentosRelevantes.length > 0,
+        temAlvaraReal
       };
     });
     
     // Filtra só os que têm movimentos relevantes se buscarAlvaras
     const processosFinais = buscarAlvaras 
-      ? processos.filter(p => p.temAlvara)
+      ? processos.filter(p => p.temAlvaraReal || p.temAlvara)
       : processos;
     
+    // Ordena: primeiro os com alvará real
+    processosFinais.sort((a, b) => {
+      if (a.temAlvaraReal && !b.temAlvaraReal) return -1;
+      if (!a.temAlvaraReal && b.temAlvaraReal) return 1;
+      return 0;
+    });
+
     res.json({
       ok: true,
       tribunal,
       totalHits: data.hits?.total?.value || 0,
-      processosComAlvara: processosFinais.filter(p => p.temAlvara).length,
+      processosComAlvaraReal: processosFinais.filter(p => p.temAlvaraReal).length,
+      processosComMovimentoRelevante: processosFinais.filter(p => p.temAlvara).length,
       processos: processosFinais,
       logs
     });
