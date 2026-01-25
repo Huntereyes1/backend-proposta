@@ -345,7 +345,7 @@ app.get("/api/leads", async (req, res) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `APIKey ${DATAJUD_API_KEY}`
+        'Authorization': DATAJUD_API_KEY
       },
       body: JSON.stringify(query)
     });
@@ -355,11 +355,20 @@ app.get("/api/leads", async (req, res) => {
 
     // Aplica FILTRO TORRE
     const leadsConfirmados = [];
-    const descartados = { baixado: 0, advogado: 0, ruido: 0, antigo: 0, scoreBaixo: 0 };
+    const descartados = { baixado: 0, advogado: 0, ruido: 0, antigo: 0, scoreBaixo: 0, duplicado: 0 };
+    const processosVistos = new Set(); // Para deduplicação
 
     for (const hit of (datajudData.hits?.hits || [])) {
       const src = hit._source;
       const movimentos = src.movimentos || [];
+      const processoNum = src.numeroProcesso;
+
+      // Deduplicação por processo
+      if (processosVistos.has(processoNum)) {
+        descartados.duplicado++;
+        continue;
+      }
+      processosVistos.add(processoNum);
 
       const analise = analisarMovimentosTORRE(movimentos);
 
@@ -372,8 +381,8 @@ app.get("/api/leads", async (req, res) => {
 
       const idadeDias = calcularIdadeDias(analise.dataAlvara);
 
-      // Filtro de idade
-      if (idadeDias > MAX_IDADE_DIAS) {
+      // Filtro de idade (só aplica se conseguiu calcular)
+      if (idadeDias !== null && idadeDias > MAX_IDADE_DIAS) {
         descartados.antigo++;
         continue;
       }
