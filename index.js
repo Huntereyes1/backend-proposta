@@ -882,22 +882,16 @@ app.get("/api/leads", async (req, res) => {
       size: limite * 5, // Busca mais para compensar filtros
       query: {
         bool: {
-          must: [
-            { term: { "grau": "G1" } }, // Só 1º grau
-          ],
           should: [
             // Termos de alvará confirmado
             { match_phrase: { "movimentos.nome": "Expedição de documento" } },
-            { match_phrase: { "movimentos.complementosTabelados.nome": "Alvará" } },
+            { match: { "movimentos.complementosTabelados.nome": "Alvará" } },
             { match: { "movimentos.nome": "alvará" } },
             { match: { "movimentos.nome": "levantamento" } },
-            { match: { "movimentos.nome": "liberação" } },
             { match_phrase: { "movimentos.nome": "Autorizo o levantamento" } },
+            { match_phrase: { "movimentos.nome": "liberação de valores" } },
           ],
-          minimum_should_match: 1,
-          filter: [
-            { range: { "dataHoraUltimaAtualizacao": { gte: dataLimiteStr } } }
-          ]
+          minimum_should_match: 1
         }
       },
       sort: [{ "dataHoraUltimaAtualizacao": { order: "desc" } }]
