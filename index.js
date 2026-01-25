@@ -566,6 +566,104 @@ app.get("/debug/datajud", async (req, res) => {
   }
 });
 
+// Busca detalhes completos de um processo específico
+app.get("/debug/datajud/processo", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const processo = req.query.processo;
+    if (!processo) {
+      return res.status(400).json({ ok: false, error: "Parâmetro 'processo' é obrigatório" });
+    }
+    
+    // Extrai tribunal do número do processo (posição 14-16 no formato CNJ)
+    const numeroLimpo = processo.replace(/\D/g, '');
+    let tribunalNum = "";
+    if (numeroLimpo.length === 20) {
+      tribunalNum = numeroLimpo.slice(14, 16);
+    }
+    
+    const tribunalMap = {
+      "01": "TRT1", "02": "TRT2", "03": "TRT3", "04": "TRT4", "05": "TRT5",
+      "06": "TRT6", "07": "TRT7", "08": "TRT8", "09": "TRT9", "10": "TRT10",
+      "11": "TRT11", "12": "TRT12", "13": "TRT13", "14": "TRT14", "15": "TRT15",
+      "16": "TRT16", "17": "TRT17", "18": "TRT18", "19": "TRT19", "20": "TRT20",
+      "21": "TRT21", "22": "TRT22", "23": "TRT23", "24": "TRT24"
+    };
+    
+    const tribunal = req.query.tribunal?.toUpperCase() || tribunalMap[tribunalNum] || "TRT15";
+    const endpoint = DATAJUD_ENDPOINTS[tribunal];
+    
+    if (!endpoint) {
+      return res.status(400).json({ ok: false, error: `Tribunal ${tribunal} não encontrado` });
+    }
+    
+    log(`[datajud] Buscando processo ${processo} no ${tribunal}...`);
+    
+    const query = {
+      size: 1,
+      query: {
+        match: {
+          "numeroProcesso": numeroLimpo
+        }
+      }
+    };
+    
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `APIKey ${DATAJUD_API_KEY}`
+      },
+      body: JSON.stringify(query)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.json({ ok: false, error: `API retornou ${response.status}`, body: errorText.substring(0, 500), logs });
+    }
+    
+    const data = await response.json();
+    
+    if (!data.hits?.hits?.length) {
+      return res.json({ ok: false, error: "Processo não encontrado", logs });
+    }
+    
+    const src = data.hits.hits[0]._source;
+    
+    // Retorna todos os dados disponíveis
+    res.json({
+      ok: true,
+      processo: {
+        numero: src.numeroProcesso,
+        numeroCNJ: formatarProcessoCNJ(src.numeroProcesso),
+        classe: src.classe,
+        assuntos: src.assuntos,
+        dataAjuizamento: src.dataAjuizamento,
+        ultimaAtualizacao: src.dataHoraUltimaAtualizacao,
+        tribunal: src.tribunal,
+        grau: src.grau,
+        orgaoJulgador: src.orgaoJulgador,
+        formato: src.formato,
+        nivelSigilo: src.nivelSigilo
+      },
+      partes: src.partes || [],
+      movimentos: (src.movimentos || []).map(m => ({
+        codigo: m.codigo,
+        nome: m.nome,
+        dataHora: m.dataHora,
+        complementos: m.complementosTabelados
+      })),
+      todosOsCampos: Object.keys(src),
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // Formata número de processo para padrão CNJ (0000000-00.0000.0.00.0000)
 function formatarProcessoCNJ(numero) {
   if (!numero) return null;
