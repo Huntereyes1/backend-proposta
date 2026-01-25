@@ -854,16 +854,17 @@ function gerarMensagensPitch(reclamante, processoData, analiseAlvara) {
   };
 }
 
-// ===== Endpoint completo: Busca leads prontos =====
+// ===== Endpoint: Busca leads CONFIRMADOS (filtro TORRE) =====
 app.get("/api/leads", async (req, res) => {
   const logs = [];
   const log = (msg) => { console.log(msg); logs.push(msg); };
   
   try {
     const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
-    const limite = Number(req.query.limite) || 10;
+    const limite = Number(req.query.limite) || 20;
+    const dias = Number(req.query.dias) || 180; // Últimos 180 dias
     
-    log(`[leads] Buscando no ${tribunal}...`);
+    log(`[leads] Buscando no ${tribunal} (últimos ${dias} dias)...`);
     
     // 1. Busca no DataJud processos com alvará
     const endpoint = DATAJUD_ENDPOINTS[tribunal];
@@ -871,17 +872,32 @@ app.get("/api/leads", async (req, res) => {
       return res.status(400).json({ ok: false, error: `Tribunal ${tribunal} não encontrado` });
     }
     
+    // Data limite (X dias atrás)
+    const dataLimite = new Date();
+    dataLimite.setDate(dataLimite.getDate() - dias);
+    const dataLimiteStr = dataLimite.toISOString().split('T')[0].replace(/-/g, '');
+    
+    // Query TORRE - termos específicos de alvará
     const query = {
-      size: limite * 2, // Busca mais para compensar filtros
+      size: limite * 5, // Busca mais para compensar filtros
       query: {
         bool: {
+          must: [
+            { term: { "grau": "G1" } }, // Só 1º grau
+          ],
           should: [
+            // Termos de alvará confirmado
+            { match_phrase: { "movimentos.nome": "Expedição de documento" } },
+            { match_phrase: { "movimentos.complementosTabelados.nome": "Alvará" } },
             { match: { "movimentos.nome": "alvará" } },
             { match: { "movimentos.nome": "levantamento" } },
             { match: { "movimentos.nome": "liberação" } },
-            { match: { "movimentos.nome": "expedição" } }
+            { match_phrase: { "movimentos.nome": "Autorizo o levantamento" } },
           ],
-          minimum_should_match: 1
+          minimum_should_match: 1,
+          filter: [
+            { range: { "dataHoraUltimaAtualizacao": { gte: dataLimiteStr } } }
+          ]
         }
       },
       sort: [{ "dataHoraUltimaAtualizacao": { order: "desc" } }]
@@ -899,52 +915,64 @@ app.get("/api/leads", async (req, res) => {
     const datajudData = await datajudResponse.json();
     log(`[leads] DataJud retornou ${datajudData.hits?.hits?.length || 0} processos`);
     
-    // 2. Filtra apenas os com alvará real
-    const processosComAlvara = (datajudData.hits?.hits || []).filter(hit => {
-      const movimentos = hit._source?.movimentos || [];
-      return movimentos.some(m => {
-        const nome = (m.nome || "").toLowerCase();
-        const complementos = (m.complementosTabelados || []).map(c => (c.nome || "").toLowerCase()).join(" ");
-        return nome.includes('alvará') || nome.includes('levantamento') ||
-               complementos.includes('alvará') || complementos.includes('levantamento');
-      });
-    }).slice(0, limite);
+    // 2. Aplica FILTRO TORRE em cada processo
+    const leadsConfirmados = [];
     
-    log(`[leads] ${processosComAlvara.length} processos com alvará real`);
-    
-    // 3. Retorna lista para consulta posterior no InfoSimples
-    const leads = processosComAlvara.map(hit => {
+    for (const hit of (datajudData.hits?.hits || [])) {
       const src = hit._source;
-      const movimentosAlvara = (src.movimentos || []).filter(m => {
-        const nome = (m.nome || "").toLowerCase();
-        const complementos = (m.complementosTabelados || []).map(c => (c.nome || "").toLowerCase()).join(" ");
-        return nome.includes('alvará') || nome.includes('levantamento') ||
-               complementos.includes('alvará') || complementos.includes('levantamento');
-      });
+      const movimentos = src.movimentos || [];
       
-      return {
-        processo: formatarProcessoCNJ(src.numeroProcesso),
-        tribunal: src.tribunal,
-        vara: src.orgaoJulgador?.nome,
-        classe: src.classe?.nome,
-        ultimaAtualizacao: src.dataHoraUltimaAtualizacao,
-        movimentosAlvara: movimentosAlvara.slice(0, 3).map(m => ({
-          nome: m.nome,
-          data: m.dataHora,
-          complemento: (m.complementosTabelados || []).map(c => c.nome).join(", ")
-        })),
-        // URLs úteis
-        urlPje: `https://pje.${tribunal.toLowerCase()}.jus.br/consultaprocessual/detalhe-processo/${src.numeroProcesso}`,
-        urlInfoSimples: `/api/processo?processo=${src.numeroProcesso}`
-      };
-    });
+      // Análise TORRE
+      const analise = analisarMovimentosTORRE(movimentos);
+      
+      // Só adiciona se passou no filtro TORRE
+      if (analise.confirmado) {
+        leadsConfirmados.push({
+          processo: formatarProcessoCNJ(src.numeroProcesso),
+          tribunal: src.tribunal,
+          grau: src.grau,
+          vara: src.orgaoJulgador?.nome,
+          classe: src.classe?.nome,
+          ultimaAtualizacao: src.dataHoraUltimaAtualizacao,
+          
+          // Dados do alvará confirmado
+          alvara: {
+            confirmado: true,
+            tipo: analise.tipo,
+            data: analise.dataAlvara,
+            banco: analise.banco,
+            valor: analise.valor,
+            movimento: analise.movimentoAlvara
+          },
+          
+          // URLs
+          urlPje: `https://pje.${tribunal.toLowerCase()}.jus.br/consultaprocessual/detalhe-processo/${src.numeroProcesso}`,
+          urlDossie: `/api/dossie?processo=${src.numeroProcesso}`
+        });
+        
+        // Para quando atingir o limite
+        if (leadsConfirmados.length >= limite) break;
+      }
+    }
+    
+    log(`[leads] ${leadsConfirmados.length} leads CONFIRMADOS após filtro TORRE`);
     
     res.json({
       ok: true,
       tribunal,
-      totalEncontrados: leads.length,
-      leads,
-      instrucoes: "Para cada lead, chame /api/processo?processo=XXX para obter nome/CPF, depois /api/telefone?cpf=XXX para obter telefone",
+      filtro: {
+        dias,
+        grau: "G1",
+        tipo: "TORRE - Só confirmados"
+      },
+      totalEncontrados: leadsConfirmados.length,
+      leads: leadsConfirmados,
+      
+      // Instrução clara
+      proximoPasso: leadsConfirmados.length > 0 
+        ? "Chame /api/dossie?processo=XXX para cada lead e depois busque telefone"
+        : "Nenhum lead confirmado. Tente outro tribunal ou aumente os dias.",
+      
       logs
     });
     
@@ -952,6 +980,106 @@ app.get("/api/leads", async (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e), logs });
   }
 });
+
+// ===== Função TORRE - Analisa movimentos do DataJud =====
+function analisarMovimentosTORRE(movimentos) {
+  const resultado = {
+    confirmado: false,
+    tipo: null,
+    dataAlvara: null,
+    banco: null,
+    valor: null,
+    movimentoAlvara: null,
+    motivoDescarte: null
+  };
+  
+  // Termos que CONFIRMAM alvará (precisa ter)
+  const termosAlvaraConfirmado = [
+    /alvará/i,
+    /guia de (levantamento|liberação)/i,
+    /autorizo o levantamento/i,
+    /liberação de valores/i,
+    /expe(ça-se|dido|dição).{0,20}alvará/i
+  ];
+  
+  // Termos de BAIXA (descarta)
+  const termosBaixa = [
+    /cumprido/i,
+    /levantado/i,
+    /pago/i,
+    /devolvido/i,
+    /cancelado/i,
+    /arquiv/i
+  ];
+  
+  // Termos de ADVOGADO (descarta)
+  const termosAdvogado = [
+    /advogado/i,
+    /patrono/i,
+    /honorários/i,
+    /sucumb/i
+  ];
+  
+  // Bancos (precisa ter)
+  const termosBanco = {
+    bb: /banco do brasil|bb\b/i,
+    cef: /caixa econ|cef\b|caixa federal/i
+  };
+  
+  // Analisa cada movimento
+  for (const mov of movimentos) {
+    const nome = (mov.nome || "").toLowerCase();
+    const complementos = (mov.complementosTabelados || [])
+      .map(c => (c.nome || "").toLowerCase())
+      .join(" ");
+    const textoCompleto = `${nome} ${complementos}`;
+    
+    // Verifica se tem termo de alvará
+    const temAlvara = termosAlvaraConfirmado.some(regex => regex.test(textoCompleto));
+    
+    // Verifica complemento específico "Alvará"
+    const temComplementoAlvara = complementos.includes('alvará');
+    
+    if (!temAlvara && !temComplementoAlvara) continue;
+    
+    // Verifica se já foi cumprido/baixado
+    const jaBaixado = termosBaixa.some(regex => regex.test(textoCompleto));
+    if (jaBaixado) {
+      resultado.motivoDescarte = "Já cumprido/levantado/pago";
+      continue;
+    }
+    
+    // Verifica se é do advogado
+    const eDoAdvogado = termosAdvogado.some(regex => regex.test(textoCompleto));
+    if (eDoAdvogado) {
+      resultado.motivoDescarte = "Alvará do advogado, não do reclamante";
+      continue;
+    }
+    
+    // PASSOU NO FILTRO TORRE! ✅
+    resultado.confirmado = true;
+    resultado.tipo = temComplementoAlvara ? "alvara_expedido" : "liberacao_valores";
+    resultado.dataAlvara = mov.dataHora;
+    resultado.movimentoAlvara = {
+      nome: mov.nome,
+      complemento: complementos,
+      data: mov.dataHora
+    };
+    
+    // Identifica banco
+    if (termosBanco.bb.test(textoCompleto)) resultado.banco = "BB";
+    else if (termosBanco.cef.test(textoCompleto)) resultado.banco = "CEF";
+    
+    // Extrai valor se presente
+    const matchValor = textoCompleto.match(/r\$\s*([\d.,]+)/i);
+    if (matchValor) resultado.valor = `R$ ${matchValor[1]}`;
+    
+    // Encontrou um válido, pode parar
+    break;
+  }
+  
+  return resultado;
+}
 
 // ===== PJe Consulta Processual - Pegar partes do processo =====
 app.get("/debug/pje", async (req, res) => {
