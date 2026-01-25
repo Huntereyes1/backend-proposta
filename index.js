@@ -406,7 +406,7 @@ app.get("/debug/datajud", async (req, res) => {
   
   try {
     const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
-    const termo = req.query.termo || "alvará";
+    const processo = req.query.processo || null;
     const limite = Number(req.query.limite) || 10;
     
     const endpoint = DATAJUD_ENDPOINTS[tribunal];
@@ -416,31 +416,33 @@ app.get("/debug/datajud", async (req, res) => {
     
     log(`[datajud] Buscando no ${tribunal}...`);
     log(`[datajud] Endpoint: ${endpoint}`);
-    log(`[datajud] Termo: ${termo}`);
     
-    // Query Elasticsearch para buscar movimentações com o termo
-    const query = {
-      size: limite,
-      query: {
-        bool: {
-          must: [
-            {
-              nested: {
-                path: "movimentos",
-                query: {
-                  match: {
-                    "movimentos.nome": termo
-                  }
-                }
-              }
-            }
-          ]
+    let query;
+    
+    if (processo) {
+      // Busca por número de processo específico
+      log(`[datajud] Processo: ${processo}`);
+      query = {
+        size: 1,
+        query: {
+          match: {
+            "numeroProcesso": processo
+          }
         }
-      },
-      sort: [
-        { "dataAjuizamento": { order: "desc" } }
-      ]
-    };
+      };
+    } else {
+      // Busca processos recentes (últimos 30 dias)
+      log(`[datajud] Buscando processos recentes...`);
+      query = {
+        size: limite,
+        query: {
+          match_all: {}
+        },
+        sort: [
+          { "dataAjuizamento": { order: "desc" } }
+        ]
+      };
+    }
     
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -455,7 +457,7 @@ app.get("/debug/datajud", async (req, res) => {
     
     if (!response.ok) {
       const errorText = await response.text();
-      return res.json({ ok: false, error: `API retornou ${response.status}`, body: errorText.substring(0, 500), logs });
+      return res.json({ ok: false, error: `API retornou ${response.status}`, body: errorText.substring(0, 1000), logs });
     }
     
     const data = await response.json();
@@ -473,23 +475,32 @@ app.get("/debug/datajud", async (req, res) => {
         tribunal: src.tribunal,
         grau: src.grau,
         orgaoJulgador: src.orgaoJulgador?.nome,
-        // Movimentos relevantes
-        movimentos: (src.movimentos || [])
-          .filter(m => m.nome && /alvará|levantamento|pagamento|liberação|saque/i.test(m.nome))
-          .slice(0, 5)
-          .map(m => ({
-            nome: m.nome,
-            data: m.dataHora
-          }))
+        formatoProcesso: src.formato,
+        // Partes do processo
+        partes: (src.partes || []).slice(0, 5).map(p => ({
+          tipo: p.tipo,
+          nome: p.nome,
+          documento: p.numeroDocumentoPrincipal
+        })),
+        // Movimentos (se existirem)
+        movimentos: (src.movimentos || []).slice(0, 10).map(m => ({
+          nome: m.nome,
+          data: m.dataHora,
+          complemento: (m.complementosTabelados || []).map(c => c.nome).join(", ")
+        }))
       };
     });
+    
+    // Mostra estrutura de um processo para debug
+    const exemploCompleto = data.hits?.hits?.[0]?._source || null;
     
     res.json({
       ok: true,
       tribunal,
-      termo,
       totalHits: data.hits?.total?.value || 0,
       processos,
+      camposDisponiveis: exemploCompleto ? Object.keys(exemploCompleto) : [],
+      exemploMovimentos: exemploCompleto?.movimentos?.slice(0, 3) || [],
       logs
     });
     
