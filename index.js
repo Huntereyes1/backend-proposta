@@ -608,7 +608,11 @@ app.get("/api/dossie", async (req, res) => {
     log(`[dossie] Processo encontrado: ${processoData.vara}`);
     log(`[dossie] Reclamantes: ${processoData.reclamantes?.length || 0}`);
     
-    // 2. Para cada reclamante, tenta buscar telefone (se tiver Direct Data configurado)
+    // 2. Analisa os movimentos para encontrar ALVARÁ CONFIRMADO
+    const analiseAlvara = analisarAlvaraConfirmado(processoData);
+    log(`[dossie] Análise alvará: ${analiseAlvara.status}`);
+    
+    // 3. Para cada reclamante, monta dados
     const reclamantesComTelefone = [];
     
     for (const reclamante of (processoData.reclamantes || [])) {
@@ -616,19 +620,13 @@ app.get("/api/dossie", async (req, res) => {
         ...reclamante,
         telefone: null,
         whatsapp: null,
-        status: "pendente_telefone"
+        status: DIRECTDATA_TOKEN ? "pendente_telefone" : "aguardando_directdata"
       };
-      
-      // Se tiver CPF e Direct Data configurado, busca telefone
-      // Por enquanto, marca como pendente
-      if (!DIRECTDATA_TOKEN) {
-        dadosReclamante.status = "aguardando_directdata";
-      }
       
       reclamantesComTelefone.push(dadosReclamante);
     }
     
-    // 3. Monta o dossiê
+    // 4. Monta o dossiê
     const dossie = {
       processo: processoData.processo,
       tribunal: processoData.tribunal,
@@ -641,9 +639,20 @@ app.get("/api/dossie", async (req, res) => {
       // Reclamados (empresa/devedor)
       reclamados: processoData.reclamados,
       
-      // Movimentos de alvará
-      alvaras: processoData.movimentosAlvara,
-      temAlvara: processoData.movimentosAlvara?.length > 0,
+      // ===== ANÁLISE DE ALVARÁ =====
+      analiseAlvara: {
+        temAlvaraConfirmado: analiseAlvara.confirmado,
+        status: analiseAlvara.status,
+        // "confirmado_pf" | "alvara_advogado" | "indicio" | "sem_alvara"
+        
+        alvarasEncontrados: analiseAlvara.alvaras,
+        valorEstimado: analiseAlvara.valorEstimado,
+        bancoIdentificado: analiseAlvara.banco,
+        dataAlvara: analiseAlvara.dataAlvara,
+        
+        // Motivo se descartado
+        motivoDescarte: analiseAlvara.motivoDescarte
+      },
       
       // Links úteis
       links: {
@@ -651,20 +660,16 @@ app.get("/api/dossie", async (req, res) => {
         comprovante: processoData.comprovanteUrl
       },
       
-      // Status do dossiê
-      status: DIRECTDATA_TOKEN ? "completo" : "parcial_aguardando_telefone",
+      // Status geral do dossiê
+      status: determinarStatusDossie(analiseAlvara, DIRECTDATA_TOKEN),
       
-      // Mensagem sugerida para WhatsApp
-      mensagemSugerida: reclamantesComTelefone[0] ? 
-        `Olá ${reclamantesComTelefone[0].nome?.split(' ')[0] || 'Sr(a)'}, ` +
-        `identificamos que você possui um alvará judicial liberado no processo ${processoData.processo}. ` +
-        `Podemos ajudá-lo a realizar o saque de forma rápida e segura. Posso explicar como funciona?` 
-        : null,
+      // ===== MENSAGENS DE PITCH =====
+      mensagens: gerarMensagensPitch(reclamantesComTelefone[0], processoData, analiseAlvara),
       
       geradoEm: new Date().toISOString()
     };
     
-    log(`[dossie] Dossiê gerado com sucesso`);
+    log(`[dossie] Dossiê gerado - Status: ${dossie.status}`);
     
     res.json({
       ok: true,
@@ -676,6 +681,178 @@ app.get("/api/dossie", async (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e), logs });
   }
 });
+
+// ===== Função para analisar se tem ALVARÁ CONFIRMADO =====
+function analisarAlvaraConfirmado(processoData) {
+  const resultado = {
+    confirmado: false,
+    status: "sem_alvara",
+    alvaras: [],
+    valorEstimado: null,
+    banco: null,
+    dataAlvara: null,
+    motivoDescarte: null
+  };
+  
+  // Junta todos os textos dos movimentos e expedientes
+  const movimentos = processoData.movimentosAlvara || [];
+  const expedientes = processoData.expedientesRecentes || [];
+  const itens = processoData._itens || [];
+  
+  // Termos que CONFIRMAM alvará
+  const termosAlvara = [
+    /alvará/i,
+    /guia de (levantamento|liberação)/i,
+    /expedido\s+alvará/i,
+    /expedi[çr]ão de alvará/i,
+    /mandado de levantamento/i,
+    /liberação de valores/i
+  ];
+  
+  // Termos que DESCARTAM (já foi sacado ou é do advogado)
+  const termosDescarte = [
+    /cumprido/i,
+    /levantado/i,
+    /pago/i,
+    /devolvido/i,
+    /cancelado/i
+  ];
+  
+  // Termos que indicam ser do ADVOGADO (não do reclamante)
+  const termosAdvogado = [
+    /advogado/i,
+    /patrono/i,
+    /honorários/i,
+    /procurador/i
+  ];
+  
+  // Bancos válidos
+  const termosBanco = [
+    /banco do brasil/i,
+    /caixa econômica/i,
+    /cef/i,
+    /bb/i
+  ];
+  
+  // Analisa cada movimento
+  for (const mov of movimentos) {
+    const texto = `${mov.titulo || ''} ${mov.complemento || ''}`.toLowerCase();
+    
+    // Verifica se tem termo de alvará
+    const temAlvara = termosAlvara.some(regex => regex.test(texto));
+    if (!temAlvara) continue;
+    
+    // Verifica se já foi cumprido/levantado
+    const jaCumprido = termosDescarte.some(regex => regex.test(texto));
+    if (jaCumprido) {
+      resultado.motivoDescarte = "Alvará já cumprido/levantado";
+      continue;
+    }
+    
+    // Verifica se é do advogado
+    const eDoAdvogado = termosAdvogado.some(regex => regex.test(texto));
+    if (eDoAdvogado) {
+      resultado.status = "alvara_advogado";
+      resultado.motivoDescarte = "Alvará em nome do advogado, não do reclamante";
+      resultado.alvaras.push({
+        texto: mov.titulo,
+        data: mov.data,
+        tipo: "advogado"
+      });
+      continue;
+    }
+    
+    // Se chegou aqui, é alvará válido!
+    resultado.alvaras.push({
+      texto: mov.titulo,
+      data: mov.data,
+      tipo: "reclamante"
+    });
+    
+    // Busca banco
+    const temBanco = termosBanco.some(regex => regex.test(texto));
+    if (temBanco) {
+      resultado.banco = texto.includes('caixa') || texto.includes('cef') ? 'CEF' : 'BB';
+    }
+    
+    // Busca valor
+    const matchValor = texto.match(/r\$\s*([\d.,]+)/i);
+    if (matchValor) {
+      resultado.valorEstimado = matchValor[0].toUpperCase();
+    }
+    
+    resultado.dataAlvara = mov.data;
+  }
+  
+  // Define status final
+  if (resultado.alvaras.some(a => a.tipo === "reclamante")) {
+    resultado.confirmado = true;
+    resultado.status = "confirmado_pf";
+  } else if (resultado.alvaras.length > 0) {
+    resultado.status = "alvara_advogado";
+  } else if (movimentos.length > 0) {
+    resultado.status = "indicio";
+  }
+  
+  return resultado;
+}
+
+// ===== Determina status do dossiê =====
+function determinarStatusDossie(analiseAlvara, temDirectData) {
+  if (!analiseAlvara.confirmado) {
+    if (analiseAlvara.status === "alvara_advogado") {
+      return "descartado_alvara_advogado";
+    }
+    if (analiseAlvara.status === "indicio") {
+      return "indicio_verificar_manualmente";
+    }
+    return "sem_alvara_confirmado";
+  }
+  
+  if (!temDirectData) {
+    return "alvara_confirmado_aguardando_telefone";
+  }
+  
+  return "pronto_para_contato";
+}
+
+// ===== Gera mensagens de pitch =====
+function gerarMensagensPitch(reclamante, processoData, analiseAlvara) {
+  const primeiroNome = reclamante?.nome?.split(' ')[0] || 'Sr(a)';
+  const processo = processoData.processo;
+  const tribunal = processoData.tribunal || 'TRT';
+  const valor = analiseAlvara.valorEstimado || processoData.valorCausa;
+  const banco = analiseAlvara.banco || 'BB/CEF';
+  
+  // Se NÃO tem alvará confirmado, retorna mensagem de indício
+  if (!analiseAlvara.confirmado) {
+    return {
+      tipo: "indicio",
+      alerta: "⚠️ Alvará NÃO confirmado. Use abordagem cautelosa.",
+      
+      abertura: `Oi ${primeiroNome}, vi movimentações no seu processo ${processo} (${tribunal}) que podem indicar valor a liberar. Posso checar sem custo e te explicar em 2 min como funciona o saque?`,
+      
+      seResponderSim: `Perfeito. Confiro agora e já te retorno com o valor/etapa e o passo a passo. Se estiver liberado, cuidamos de tudo e você só paga após o crédito.`,
+      
+      sePedirProva: `Te mando o link oficial do tribunal e um PDF do dossiê com os prints. Aqui o link do processo: https://pje.trt15.jus.br/consultaprocessual/detalhe-processo/${processo.replace(/\D/g, '')}`
+    };
+  }
+  
+  // Se TEM alvará confirmado, retorna PITCH FINAL BOSS 🎯
+  return {
+    tipo: "confirmado",
+    alerta: "✅ ALVARÁ CONFIRMADO! Pode usar pitch direto.",
+    
+    // PITCH FINAL BOSS
+    abertura: `Oi ${primeiroNome}! Vi no seu processo ${processo} um alvará judicial emitido em seu nome no ${banco}${valor ? `, valor aproximado ${valor}` : ''}. Posso te ajudar a sacar com segurança e te enviar o passo a passo? Cobro 15% só após o crédito cair na sua conta.`,
+    
+    seResponderSim: `Ótimo! Vou te explicar rapidinho:\n\n1️⃣ Verifico seu processo e preparo a documentação\n2️⃣ Você vai na agência ${banco} com RG, CPF e comprovante de endereço\n3️⃣ O dinheiro cai em 3-7 dias úteis\n4️⃣ Só então você me paga os 15%\n\nPosso começar agora?`,
+    
+    sePedirProva: `Claro! Aqui está o link oficial do tribunal onde você pode ver o alvará: https://pje.trt15.jus.br/consultaprocessual/detalhe-processo/${processo.replace(/\D/g, '')}\n\nSe preferir, te mando um PDF com o dossiê completo.`,
+    
+    fechamento: `Combinado então! Me manda seu RG e CPF (foto) e um comprovante de endereço que eu já preparo tudo. Qualquer dúvida é só chamar! 🤝`
+  };
+}
 
 // ===== Endpoint completo: Busca leads prontos =====
 app.get("/api/leads", async (req, res) => {
