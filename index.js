@@ -379,11 +379,12 @@ app.get("/api/processo", async (req, res) => {
     }
     
     const numeroLimpo = processo.replace(/\D/g, '');
+    const numeroCNJ = formatarProcessoCNJ(numeroLimpo);
     
-    // Monta URL da API InfoSimples
-    const url = `https://api.infosimples.com/api/v2/consultas/tribunal/trt/processo?processo=${numeroLimpo}&token=${INFOSIMPLES_TOKEN}`;
+    // Monta URL da API InfoSimples - parâmetro correto é numero_processo
+    const url = `https://api.infosimples.com/api/v2/consultas/tribunal/trt/processo?numero_processo=${encodeURIComponent(numeroCNJ)}&token=${INFOSIMPLES_TOKEN}`;
     
-    log(`[infosimples] Consultando processo ${processo}...`);
+    log(`[infosimples] Consultando processo ${numeroCNJ}...`);
     
     const response = await fetch(url, {
       method: 'GET',
@@ -409,10 +410,10 @@ app.get("/api/processo", async (req, res) => {
     // Busca partes (reclamante/autor)
     const partes = resultado.partes || [];
     const reclamantes = partes.filter(p => 
-      /reclamante|autor|exequente|requerente/i.test(p.tipo || p.polo)
+      /reclamante|autor|exequente|requerente/i.test(p.tipo || p.polo || "")
     );
     const reclamados = partes.filter(p => 
-      /reclamado|réu|executado|requerido/i.test(p.tipo || p.polo)
+      /reclamado|réu|executado|requerido/i.test(p.tipo || p.polo || "")
     );
     
     // Busca movimentos de alvará
@@ -430,7 +431,7 @@ app.get("/api/processo", async (req, res) => {
     
     res.json({
       ok: true,
-      processo: formatarProcessoCNJ(numeroLimpo),
+      processo: numeroCNJ,
       tribunal: resultado.tribunal || resultado.orgao,
       vara: resultado.vara || resultado.orgao_julgador,
       classe: resultado.classe,
@@ -486,22 +487,17 @@ app.get("/api/telefone", async (req, res) => {
   
   try {
     const cpf = req.query.cpf;
-    const nome = req.query.nome;
     
-    if (!cpf && !nome) {
-      return res.status(400).json({ ok: false, error: "Informe 'cpf' ou 'nome'" });
+    if (!cpf) {
+      return res.status(400).json({ ok: false, error: "Informe 'cpf'" });
     }
     
-    let url;
-    if (cpf) {
-      // Consulta por CPF
-      url = `https://api.infosimples.com/api/v2/consultas/cadastral/cpf?cpf=${cpf.replace(/\D/g, '')}&token=${INFOSIMPLES_TOKEN}`;
-      log(`[infosimples] Consultando CPF ${cpf}...`);
-    } else {
-      // Consulta por nome (menos precisa)
-      url = `https://api.infosimples.com/api/v2/consultas/cadastral/nome?nome=${encodeURIComponent(nome)}&token=${INFOSIMPLES_TOKEN}`;
-      log(`[infosimples] Consultando nome ${nome}...`);
-    }
+    const cpfLimpo = cpf.replace(/\D/g, '');
+    
+    // URL correta para consulta de pessoa física
+    const url = `https://api.infosimples.com/api/v2/consultas/cadastral/pessoa-fisica?cpf=${cpfLimpo}&token=${INFOSIMPLES_TOKEN}`;
+    
+    log(`[infosimples] Consultando CPF ${cpfLimpo}...`);
     
     const response = await fetch(url, {
       method: 'GET',
