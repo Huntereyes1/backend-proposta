@@ -364,6 +364,108 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// ===== PJe Consulta Processual - Pegar partes do processo =====
+app.get("/debug/pje", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const processo = req.query.processo;
+    if (!processo) {
+      return res.status(400).json({ ok: false, error: "Parâmetro 'processo' é obrigatório" });
+    }
+    
+    // Extrai tribunal do número do processo
+    const numeroLimpo = processo.replace(/\D/g, '');
+    let tribunalNum = "";
+    if (numeroLimpo.length === 20) {
+      tribunalNum = numeroLimpo.slice(14, 16);
+    }
+    
+    // URLs do PJe por tribunal
+    const pjeUrls = {
+      "15": "https://pje.trt15.jus.br",
+      "02": "https://pje.trt2.jus.br",
+      "01": "https://pje.trt1.jus.br",
+    };
+    
+    const pjeBase = pjeUrls[tribunalNum] || pjeUrls["15"];
+    const consultaUrl = `${pjeBase}/consultaprocessual/detalhe-processo/${numeroLimpo}`;
+    
+    log(`[pje] Consultando ${consultaUrl}...`);
+    
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    });
+    
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1280, height: 800 });
+    
+    await page.goto(consultaUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await sleep(3000);
+    
+    // Tenta extrair dados da página
+    const dados = await page.evaluate(() => {
+      const getText = (sel) => {
+        const el = document.querySelector(sel);
+        return el ? el.innerText.trim() : null;
+      };
+      
+      const body = document.body.innerText || "";
+      
+      // Busca partes por diferentes padrões
+      const partes = [];
+      
+      // Padrão 1: Tabela de partes
+      document.querySelectorAll('table tr, .parte, [class*="parte"], [class*="polo"]').forEach(el => {
+        const texto = el.innerText || "";
+        if (texto.length > 5 && texto.length < 200) {
+          partes.push(texto.trim());
+        }
+      });
+      
+      // Busca reclamante/autor no texto
+      const regexReclamante = /(?:RECLAMANTE|AUTOR|EXEQUENTE|REQUERENTE)[:\s]*([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ][A-Za-záàâãéèêíìîóòôõúùûçÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ\s\.]+?)(?:\n|CPF|OAB|Advogado|RECLAMAD|$)/gi;
+      const matchesReclamante = [...body.matchAll(regexReclamante)];
+      
+      // Busca valores
+      const regexValor = /R\$\s*([\d.,]+)/g;
+      const matchesValor = [...body.matchAll(regexValor)].map(m => m[1]);
+      
+      return {
+        url: window.location.href,
+        titulo: document.title,
+        bodyLength: body.length,
+        partes: partes.slice(0, 10),
+        reclamantes: matchesReclamante.map(m => m[1]?.trim()).filter(Boolean),
+        valores: matchesValor.slice(0, 5),
+        preview: body.substring(0, 3000)
+      };
+    });
+    
+    log(`[pje] Página carregada: ${dados.titulo}`);
+    log(`[pje] Partes encontradas: ${dados.partes.length}`);
+    log(`[pje] Reclamantes encontrados: ${dados.reclamantes.length}`);
+    
+    await browser.close();
+    
+    res.json({
+      ok: true,
+      processo,
+      processoCNJ: formatarProcessoCNJ(numeroLimpo),
+      pjeUrl: consultaUrl,
+      dados,
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // ===== DataJud API (CNJ) =====
 // API oficial do CNJ para consulta de processos
 // Docs: https://datajud-wiki.cnj.jus.br/api-publica/
