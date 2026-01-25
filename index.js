@@ -364,8 +364,9 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
-// ===== InfoSimples API - Consulta Processual =====
+// ===== APIs de Consulta =====
 const INFOSIMPLES_TOKEN = process.env.INFOSIMPLES_TOKEN || "LUdOqPRSc0SqVRAKf594tnE0nk7GBi0WSek10Wkh";
+const DIRECTDATA_TOKEN = process.env.DIRECTDATA_TOKEN || ""; // Adicionar quando tiver
 
 // Consulta processo no TRT via InfoSimples
 app.get("/api/processo", async (req, res) => {
@@ -381,7 +382,7 @@ app.get("/api/processo", async (req, res) => {
     const numeroLimpo = processo.replace(/\D/g, '');
     const numeroCNJ = formatarProcessoCNJ(numeroLimpo);
     
-    // Monta URL da API InfoSimples - parâmetro correto é numero_processo
+    // Monta URL da API InfoSimples
     const url = `https://api.infosimples.com/api/v2/consultas/tribunal/trt/processo?numero_processo=${encodeURIComponent(numeroCNJ)}&token=${INFOSIMPLES_TOKEN}`;
     
     log(`[infosimples] Consultando processo ${numeroCNJ}...`);
@@ -404,73 +405,78 @@ app.get("/api/processo", async (req, res) => {
       });
     }
     
-    // Extrai dados relevantes
+    // Extrai dados do InfoSimples
     const resultado = data.data?.[0] || {};
+    const detalhes = resultado.detalhes || {};
+    const itens = resultado.itens || [];
     
-    // Busca partes (reclamante/autor)
-    const partes = resultado.partes || [];
-    const reclamantes = partes.filter(p => 
-      /reclamante|autor|exequente|requerente/i.test(p.tipo || p.polo || "")
-    );
-    const reclamados = partes.filter(p => 
-      /reclamado|réu|executado|requerido/i.test(p.tipo || p.polo || "")
-    );
+    // Extrai partes do polo_ativo e polo_passivo
+    const poloAtivo = detalhes.polo_ativo || [];
+    const poloPassivo = detalhes.polo_passivo || [];
     
-    // Busca movimentos de alvará
-    const movimentos = resultado.movimentos || resultado.andamentos || [];
-    const movimentosAlvara = movimentos.filter(m => {
-      const texto = (m.texto || m.descricao || m.movimento || "").toLowerCase();
-      return texto.includes('alvará') || texto.includes('levantamento') || 
-             texto.includes('liberação') || texto.includes('expedição');
-    });
+    // Formata reclamantes (polo ativo)
+    const reclamantes = poloAtivo.map(p => ({
+      nome: p.nome,
+      tipo: p.tipo,
+      advogados: (p.representantes || []).filter(r => r.tipo === "Advogado").map(r => r.nome)
+    }));
     
-    // Extrai valores
-    const todosTextos = movimentos.map(m => m.texto || m.descricao || "").join(" ");
+    // Formata reclamados (polo passivo)
+    const reclamados = poloPassivo.map(p => ({
+      nome: p.nome,
+      tipo: p.tipo,
+      advogados: (p.representantes || []).filter(r => r.tipo === "Advogado").map(r => r.nome)
+    }));
+    
+    // Busca movimentos de alvará nos itens
+    const movimentosAlvara = itens.filter(item => {
+      const titulo = (item.titulo || "").toLowerCase();
+      return titulo.includes('alvará') || 
+             titulo.includes('levantamento') || 
+             titulo.includes('liberação de valores') ||
+             titulo.includes('expedição de guia');
+    }).map(item => ({
+      data: item.data,
+      titulo: item.titulo,
+      id: item.id_documento
+    }));
+    
+    // Extrai valores do texto
+    const todosTextos = itens.map(i => i.titulo || "").join(" ");
     const valoresMatch = todosTextos.match(/R\$\s*([\d.,]+)/g) || [];
     const valores = valoresMatch.map(v => v.replace("R$", "").trim());
+    
+    // Valor da causa
+    const valorCausa = detalhes.valor_causa || detalhes.normalizado_valor_causa;
     
     res.json({
       ok: true,
       processo: numeroCNJ,
-      tribunal: resultado.tribunal || resultado.orgao,
-      vara: resultado.vara || resultado.orgao_julgador,
-      classe: resultado.classe,
-      assunto: resultado.assunto,
-      dataDistribuicao: resultado.data_distribuicao || resultado.data_autuacao,
-      situacao: resultado.situacao || resultado.status,
+      tribunal: resultado.trt || "TRT",
+      vara: detalhes.orgao_julgador,
+      classe: detalhes.processo?.split(" ")[0],
+      assunto: detalhes.assuntos?.map(a => a.descricao).join(", "),
+      dataDistribuicao: detalhes.data_distribuicao || detalhes.data_autuacao,
+      valorCausa: valorCausa,
       
-      // Partes
-      reclamantes: reclamantes.map(p => ({
-        nome: p.nome,
-        documento: p.documento || p.cpf || p.cnpj,
-        tipo: p.tipo || p.polo
-      })),
-      reclamados: reclamados.map(p => ({
-        nome: p.nome,
-        documento: p.documento || p.cpf || p.cnpj,
-        tipo: p.tipo || p.polo
-      })),
+      // Partes - DADOS IMPORTANTES
+      reclamantes,
+      reclamados,
       
-      // Advogados
-      advogados: (resultado.advogados || []).map(a => ({
-        nome: a.nome,
-        oab: a.oab
-      })),
+      // Movimentos de alvará
+      movimentosAlvara: movimentosAlvara.slice(0, 10),
       
-      // Alvarás encontrados
-      movimentosAlvara: movimentosAlvara.slice(0, 10).map(m => ({
-        data: m.data,
-        texto: (m.texto || m.descricao || m.movimento || "").substring(0, 500)
-      })),
-      
-      // Valores encontrados
-      valores: valores.slice(0, 5),
+      // Valores encontrados nos movimentos
+      valoresEncontrados: valores.slice(0, 5),
       
       // Total de movimentos
-      totalMovimentos: movimentos.length,
+      totalMovimentos: itens.length,
       
-      // Dados brutos para debug
-      _raw: resultado,
+      // Link do comprovante
+      comprovanteUrl: resultado.site_receipt,
+      
+      // Expedientes recentes
+      expedientesRecentes: (resultado.expedientes || []).slice(0, 5),
       
       logs
     });
@@ -480,63 +486,189 @@ app.get("/api/processo", async (req, res) => {
   }
 });
 
-// Consulta CPF para obter telefone via InfoSimples
+// ===== Direct Data API - Consulta telefone por CPF =====
 app.get("/api/telefone", async (req, res) => {
   const logs = [];
   const log = (msg) => { console.log(msg); logs.push(msg); };
   
   try {
     const cpf = req.query.cpf;
+    const nome = req.query.nome;
     
-    if (!cpf) {
-      return res.status(400).json({ ok: false, error: "Informe 'cpf'" });
+    if (!cpf && !nome) {
+      return res.status(400).json({ ok: false, error: "Informe 'cpf' ou 'nome'" });
     }
     
-    const cpfLimpo = cpf.replace(/\D/g, '');
+    // Verifica se tem token da Direct Data
+    if (!DIRECTDATA_TOKEN) {
+      return res.json({
+        ok: false,
+        error: "Token Direct Data não configurado. Aguardando aprovação da conta.",
+        instrucoes: "Após receber o token, configure a variável DIRECTDATA_TOKEN no Railway",
+        logs
+      });
+    }
     
-    // URL correta para consulta de pessoa física
-    const url = `https://api.infosimples.com/api/v2/consultas/cadastral/pessoa-fisica?cpf=${cpfLimpo}&token=${INFOSIMPLES_TOKEN}`;
+    const cpfLimpo = cpf ? cpf.replace(/\D/g, '') : '';
     
-    log(`[infosimples] Consultando CPF ${cpfLimpo}...`);
+    // URL da API Direct Data - Cadastro Pessoa Física
+    const url = `https://apiv3.directd.com.br/api/CadastroPessoaFisica?CPF=${cpfLimpo}&TOKEN=${DIRECTDATA_TOKEN}`;
+    
+    log(`[directdata] Consultando CPF ${cpfLimpo}...`);
     
     const response = await fetch(url, {
       method: 'GET',
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Accept': 'application/json' }
     });
     
     const data = await response.json();
     
-    log(`[infosimples] Status: ${data.code}`);
+    log(`[directdata] Resultado: ${data.metaDados?.resultado || 'erro'}`);
     
-    if (data.code !== 200) {
+    if (data.metaDados?.resultado !== "Sucesso") {
       return res.json({ 
         ok: false, 
-        error: data.code_message || "Erro na consulta",
-        detalhes: data,
+        error: data.metaDados?.mensagem || "Erro na consulta",
+        detalhes: data.metaDados,
         logs 
       });
     }
     
-    const resultado = data.data?.[0] || data.data || {};
+    const retorno = data.retorno || {};
+    
+    // Extrai telefones com WhatsApp
+    const telefones = (retorno.telefones || []).map(t => ({
+      numero: t.telefoneComDDD,
+      tipo: t.tipoTelefone,
+      operadora: t.operadora,
+      whatsapp: t.whatsApp,
+      bloqueado: t.telemarketingBloqueado
+    }));
+    
+    // Filtra só os que têm WhatsApp e não estão bloqueados
+    const telefonesWhatsApp = telefones.filter(t => t.whatsapp && !t.bloqueado);
     
     res.json({
       ok: true,
-      nome: resultado.nome,
-      cpf: resultado.cpf,
-      dataNascimento: resultado.data_nascimento,
+      cpf: retorno.cpf,
+      nome: retorno.nome,
+      dataNascimento: retorno.dataNascimento,
+      nomeMae: retorno.nomeMae,
       
-      // Telefones
-      telefones: resultado.telefones || [],
+      // Telefones - O QUE VOCÊ PRECISA
+      telefones,
+      telefonesWhatsApp,
+      melhorTelefone: telefonesWhatsApp[0]?.numero || telefones[0]?.numero,
       
       // Endereço
-      endereco: resultado.endereco || resultado.enderecos?.[0],
+      endereco: (retorno.enderecos || [])[0],
       
       // E-mails
-      emails: resultado.emails || [],
+      emails: (retorno.emails || []).map(e => e.enderecoEmail),
       
-      // Status
-      situacaoCpf: resultado.situacao_cadastral || resultado.situacao,
+      // Renda (útil para filtrar)
+      rendaEstimada: retorno.rendaEstimada,
+      faixaSalarial: retorno.rendaFaixaSalarial,
       
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
+// ===== Endpoint completo: Gera dossiê de um processo =====
+app.get("/api/dossie", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const processo = req.query.processo;
+    if (!processo) {
+      return res.status(400).json({ ok: false, error: "Parâmetro 'processo' é obrigatório" });
+    }
+    
+    log(`[dossie] Iniciando dossiê para ${processo}...`);
+    
+    // 1. Busca dados do processo no InfoSimples
+    const processoUrl = `${req.protocol}://${req.get('host')}/api/processo?processo=${processo}`;
+    const processoRes = await fetch(processoUrl);
+    const processoData = await processoRes.json();
+    
+    if (!processoData.ok) {
+      return res.json({
+        ok: false,
+        error: "Erro ao buscar processo",
+        detalhes: processoData,
+        logs
+      });
+    }
+    
+    log(`[dossie] Processo encontrado: ${processoData.vara}`);
+    log(`[dossie] Reclamantes: ${processoData.reclamantes?.length || 0}`);
+    
+    // 2. Para cada reclamante, tenta buscar telefone (se tiver Direct Data configurado)
+    const reclamantesComTelefone = [];
+    
+    for (const reclamante of (processoData.reclamantes || [])) {
+      const dadosReclamante = {
+        ...reclamante,
+        telefone: null,
+        whatsapp: null,
+        status: "pendente_telefone"
+      };
+      
+      // Se tiver CPF e Direct Data configurado, busca telefone
+      // Por enquanto, marca como pendente
+      if (!DIRECTDATA_TOKEN) {
+        dadosReclamante.status = "aguardando_directdata";
+      }
+      
+      reclamantesComTelefone.push(dadosReclamante);
+    }
+    
+    // 3. Monta o dossiê
+    const dossie = {
+      processo: processoData.processo,
+      tribunal: processoData.tribunal,
+      vara: processoData.vara,
+      valorCausa: processoData.valorCausa,
+      
+      // Reclamantes com status de telefone
+      reclamantes: reclamantesComTelefone,
+      
+      // Reclamados (empresa/devedor)
+      reclamados: processoData.reclamados,
+      
+      // Movimentos de alvará
+      alvaras: processoData.movimentosAlvara,
+      temAlvara: processoData.movimentosAlvara?.length > 0,
+      
+      // Links úteis
+      links: {
+        pje: `https://pje.trt15.jus.br/consultaprocessual/detalhe-processo/${processo.replace(/\D/g, '')}`,
+        comprovante: processoData.comprovanteUrl
+      },
+      
+      // Status do dossiê
+      status: DIRECTDATA_TOKEN ? "completo" : "parcial_aguardando_telefone",
+      
+      // Mensagem sugerida para WhatsApp
+      mensagemSugerida: reclamantesComTelefone[0] ? 
+        `Olá ${reclamantesComTelefone[0].nome?.split(' ')[0] || 'Sr(a)'}, ` +
+        `identificamos que você possui um alvará judicial liberado no processo ${processoData.processo}. ` +
+        `Podemos ajudá-lo a realizar o saque de forma rápida e segura. Posso explicar como funciona?` 
+        : null,
+      
+      geradoEm: new Date().toISOString()
+    };
+    
+    log(`[dossie] Dossiê gerado com sucesso`);
+    
+    res.json({
+      ok: true,
+      dossie,
       logs
     });
     
