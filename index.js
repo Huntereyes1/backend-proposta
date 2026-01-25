@@ -364,6 +364,290 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// ===== InfoSimples API - Consulta Processual =====
+const INFOSIMPLES_TOKEN = process.env.INFOSIMPLES_TOKEN || "LUdOqPRSc0SqVRAKf594tnE0nk7GBi0WSek10Wkh";
+
+// Consulta processo no TRT via InfoSimples
+app.get("/api/processo", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const processo = req.query.processo;
+    if (!processo) {
+      return res.status(400).json({ ok: false, error: "Parâmetro 'processo' é obrigatório" });
+    }
+    
+    const numeroLimpo = processo.replace(/\D/g, '');
+    
+    // Monta URL da API InfoSimples
+    const url = `https://api.infosimples.com/api/v2/consultas/tribunal/trt/processo?processo=${numeroLimpo}&token=${INFOSIMPLES_TOKEN}`;
+    
+    log(`[infosimples] Consultando processo ${processo}...`);
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    
+    log(`[infosimples] Status: ${data.code}`);
+    
+    if (data.code !== 200) {
+      return res.json({ 
+        ok: false, 
+        error: data.code_message || "Erro na consulta",
+        detalhes: data,
+        logs 
+      });
+    }
+    
+    // Extrai dados relevantes
+    const resultado = data.data?.[0] || {};
+    
+    // Busca partes (reclamante/autor)
+    const partes = resultado.partes || [];
+    const reclamantes = partes.filter(p => 
+      /reclamante|autor|exequente|requerente/i.test(p.tipo || p.polo)
+    );
+    const reclamados = partes.filter(p => 
+      /reclamado|réu|executado|requerido/i.test(p.tipo || p.polo)
+    );
+    
+    // Busca movimentos de alvará
+    const movimentos = resultado.movimentos || resultado.andamentos || [];
+    const movimentosAlvara = movimentos.filter(m => {
+      const texto = (m.texto || m.descricao || m.movimento || "").toLowerCase();
+      return texto.includes('alvará') || texto.includes('levantamento') || 
+             texto.includes('liberação') || texto.includes('expedição');
+    });
+    
+    // Extrai valores
+    const todosTextos = movimentos.map(m => m.texto || m.descricao || "").join(" ");
+    const valoresMatch = todosTextos.match(/R\$\s*([\d.,]+)/g) || [];
+    const valores = valoresMatch.map(v => v.replace("R$", "").trim());
+    
+    res.json({
+      ok: true,
+      processo: formatarProcessoCNJ(numeroLimpo),
+      tribunal: resultado.tribunal || resultado.orgao,
+      vara: resultado.vara || resultado.orgao_julgador,
+      classe: resultado.classe,
+      assunto: resultado.assunto,
+      dataDistribuicao: resultado.data_distribuicao || resultado.data_autuacao,
+      situacao: resultado.situacao || resultado.status,
+      
+      // Partes
+      reclamantes: reclamantes.map(p => ({
+        nome: p.nome,
+        documento: p.documento || p.cpf || p.cnpj,
+        tipo: p.tipo || p.polo
+      })),
+      reclamados: reclamados.map(p => ({
+        nome: p.nome,
+        documento: p.documento || p.cpf || p.cnpj,
+        tipo: p.tipo || p.polo
+      })),
+      
+      // Advogados
+      advogados: (resultado.advogados || []).map(a => ({
+        nome: a.nome,
+        oab: a.oab
+      })),
+      
+      // Alvarás encontrados
+      movimentosAlvara: movimentosAlvara.slice(0, 10).map(m => ({
+        data: m.data,
+        texto: (m.texto || m.descricao || m.movimento || "").substring(0, 500)
+      })),
+      
+      // Valores encontrados
+      valores: valores.slice(0, 5),
+      
+      // Total de movimentos
+      totalMovimentos: movimentos.length,
+      
+      // Dados brutos para debug
+      _raw: resultado,
+      
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
+// Consulta CPF para obter telefone via InfoSimples
+app.get("/api/telefone", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const cpf = req.query.cpf;
+    const nome = req.query.nome;
+    
+    if (!cpf && !nome) {
+      return res.status(400).json({ ok: false, error: "Informe 'cpf' ou 'nome'" });
+    }
+    
+    let url;
+    if (cpf) {
+      // Consulta por CPF
+      url = `https://api.infosimples.com/api/v2/consultas/cadastral/cpf?cpf=${cpf.replace(/\D/g, '')}&token=${INFOSIMPLES_TOKEN}`;
+      log(`[infosimples] Consultando CPF ${cpf}...`);
+    } else {
+      // Consulta por nome (menos precisa)
+      url = `https://api.infosimples.com/api/v2/consultas/cadastral/nome?nome=${encodeURIComponent(nome)}&token=${INFOSIMPLES_TOKEN}`;
+      log(`[infosimples] Consultando nome ${nome}...`);
+    }
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    
+    log(`[infosimples] Status: ${data.code}`);
+    
+    if (data.code !== 200) {
+      return res.json({ 
+        ok: false, 
+        error: data.code_message || "Erro na consulta",
+        detalhes: data,
+        logs 
+      });
+    }
+    
+    const resultado = data.data?.[0] || data.data || {};
+    
+    res.json({
+      ok: true,
+      nome: resultado.nome,
+      cpf: resultado.cpf,
+      dataNascimento: resultado.data_nascimento,
+      
+      // Telefones
+      telefones: resultado.telefones || [],
+      
+      // Endereço
+      endereco: resultado.endereco || resultado.enderecos?.[0],
+      
+      // E-mails
+      emails: resultado.emails || [],
+      
+      // Status
+      situacaoCpf: resultado.situacao_cadastral || resultado.situacao,
+      
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
+// ===== Endpoint completo: Busca leads prontos =====
+app.get("/api/leads", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
+    const limite = Number(req.query.limite) || 10;
+    
+    log(`[leads] Buscando no ${tribunal}...`);
+    
+    // 1. Busca no DataJud processos com alvará
+    const endpoint = DATAJUD_ENDPOINTS[tribunal];
+    if (!endpoint) {
+      return res.status(400).json({ ok: false, error: `Tribunal ${tribunal} não encontrado` });
+    }
+    
+    const query = {
+      size: limite * 2, // Busca mais para compensar filtros
+      query: {
+        bool: {
+          should: [
+            { match: { "movimentos.nome": "alvará" } },
+            { match: { "movimentos.nome": "levantamento" } },
+            { match: { "movimentos.nome": "liberação" } },
+            { match: { "movimentos.nome": "expedição" } }
+          ],
+          minimum_should_match: 1
+        }
+      },
+      sort: [{ "dataHoraUltimaAtualizacao": { order: "desc" } }]
+    };
+    
+    const datajudResponse = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `APIKey ${DATAJUD_API_KEY}`
+      },
+      body: JSON.stringify(query)
+    });
+    
+    const datajudData = await datajudResponse.json();
+    log(`[leads] DataJud retornou ${datajudData.hits?.hits?.length || 0} processos`);
+    
+    // 2. Filtra apenas os com alvará real
+    const processosComAlvara = (datajudData.hits?.hits || []).filter(hit => {
+      const movimentos = hit._source?.movimentos || [];
+      return movimentos.some(m => {
+        const nome = (m.nome || "").toLowerCase();
+        const complementos = (m.complementosTabelados || []).map(c => (c.nome || "").toLowerCase()).join(" ");
+        return nome.includes('alvará') || nome.includes('levantamento') ||
+               complementos.includes('alvará') || complementos.includes('levantamento');
+      });
+    }).slice(0, limite);
+    
+    log(`[leads] ${processosComAlvara.length} processos com alvará real`);
+    
+    // 3. Retorna lista para consulta posterior no InfoSimples
+    const leads = processosComAlvara.map(hit => {
+      const src = hit._source;
+      const movimentosAlvara = (src.movimentos || []).filter(m => {
+        const nome = (m.nome || "").toLowerCase();
+        const complementos = (m.complementosTabelados || []).map(c => (c.nome || "").toLowerCase()).join(" ");
+        return nome.includes('alvará') || nome.includes('levantamento') ||
+               complementos.includes('alvará') || complementos.includes('levantamento');
+      });
+      
+      return {
+        processo: formatarProcessoCNJ(src.numeroProcesso),
+        tribunal: src.tribunal,
+        vara: src.orgaoJulgador?.nome,
+        classe: src.classe?.nome,
+        ultimaAtualizacao: src.dataHoraUltimaAtualizacao,
+        movimentosAlvara: movimentosAlvara.slice(0, 3).map(m => ({
+          nome: m.nome,
+          data: m.dataHora,
+          complemento: (m.complementosTabelados || []).map(c => c.nome).join(", ")
+        })),
+        // URLs úteis
+        urlPje: `https://pje.${tribunal.toLowerCase()}.jus.br/consultaprocessual/detalhe-processo/${src.numeroProcesso}`,
+        urlInfoSimples: `/api/processo?processo=${src.numeroProcesso}`
+      };
+    });
+    
+    res.json({
+      ok: true,
+      tribunal,
+      totalEncontrados: leads.length,
+      leads,
+      instrucoes: "Para cada lead, chame /api/processo?processo=XXX para obter nome/CPF, depois /api/telefone?cpf=XXX para obter telefone",
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // ===== PJe Consulta Processual - Pegar partes do processo =====
 app.get("/debug/pje", async (req, res) => {
   const logs = [];
