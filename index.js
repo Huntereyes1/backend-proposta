@@ -364,6 +364,140 @@ app.get("/debug/env", (_req, res) => {
   });
 });
 
+// ===== DataJud API (CNJ) =====
+// API oficial do CNJ para consulta de processos
+// Docs: https://datajud-wiki.cnj.jus.br/api-publica/
+
+// Endpoints por tribunal trabalhista
+const DATAJUD_ENDPOINTS = {
+  TRT1: "https://api-publica.datajud.cnj.jus.br/api_publica_trt1/_search",
+  TRT2: "https://api-publica.datajud.cnj.jus.br/api_publica_trt2/_search",
+  TRT3: "https://api-publica.datajud.cnj.jus.br/api_publica_trt3/_search",
+  TRT4: "https://api-publica.datajud.cnj.jus.br/api_publica_trt4/_search",
+  TRT5: "https://api-publica.datajud.cnj.jus.br/api_publica_trt5/_search",
+  TRT6: "https://api-publica.datajud.cnj.jus.br/api_publica_trt6/_search",
+  TRT7: "https://api-publica.datajud.cnj.jus.br/api_publica_trt7/_search",
+  TRT8: "https://api-publica.datajud.cnj.jus.br/api_publica_trt8/_search",
+  TRT9: "https://api-publica.datajud.cnj.jus.br/api_publica_trt9/_search",
+  TRT10: "https://api-publica.datajud.cnj.jus.br/api_publica_trt10/_search",
+  TRT11: "https://api-publica.datajud.cnj.jus.br/api_publica_trt11/_search",
+  TRT12: "https://api-publica.datajud.cnj.jus.br/api_publica_trt12/_search",
+  TRT13: "https://api-publica.datajud.cnj.jus.br/api_publica_trt13/_search",
+  TRT14: "https://api-publica.datajud.cnj.jus.br/api_publica_trt14/_search",
+  TRT15: "https://api-publica.datajud.cnj.jus.br/api_publica_trt15/_search",
+  TRT16: "https://api-publica.datajud.cnj.jus.br/api_publica_trt16/_search",
+  TRT17: "https://api-publica.datajud.cnj.jus.br/api_publica_trt17/_search",
+  TRT18: "https://api-publica.datajud.cnj.jus.br/api_publica_trt18/_search",
+  TRT19: "https://api-publica.datajud.cnj.jus.br/api_publica_trt19/_search",
+  TRT20: "https://api-publica.datajud.cnj.jus.br/api_publica_trt20/_search",
+  TRT21: "https://api-publica.datajud.cnj.jus.br/api_publica_trt21/_search",
+  TRT22: "https://api-publica.datajud.cnj.jus.br/api_publica_trt22/_search",
+  TRT23: "https://api-publica.datajud.cnj.jus.br/api_publica_trt23/_search",
+  TRT24: "https://api-publica.datajud.cnj.jus.br/api_publica_trt24/_search",
+};
+
+// Chave pública do DataJud (verificar em https://datajud-wiki.cnj.jus.br/api-publica/acesso)
+const DATAJUD_API_KEY = "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==";
+
+// Debug: testa API DataJud
+app.get("/debug/datajud", async (req, res) => {
+  const logs = [];
+  const log = (msg) => { console.log(msg); logs.push(msg); };
+  
+  try {
+    const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
+    const termo = req.query.termo || "alvará";
+    const limite = Number(req.query.limite) || 10;
+    
+    const endpoint = DATAJUD_ENDPOINTS[tribunal];
+    if (!endpoint) {
+      return res.status(400).json({ ok: false, error: `Tribunal ${tribunal} não encontrado`, tribunaisDisponiveis: Object.keys(DATAJUD_ENDPOINTS) });
+    }
+    
+    log(`[datajud] Buscando no ${tribunal}...`);
+    log(`[datajud] Endpoint: ${endpoint}`);
+    log(`[datajud] Termo: ${termo}`);
+    
+    // Query Elasticsearch para buscar movimentações com o termo
+    const query = {
+      size: limite,
+      query: {
+        bool: {
+          must: [
+            {
+              nested: {
+                path: "movimentos",
+                query: {
+                  match: {
+                    "movimentos.nome": termo
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      sort: [
+        { "dataAjuizamento": { order: "desc" } }
+      ]
+    };
+    
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `APIKey ${DATAJUD_API_KEY}`
+      },
+      body: JSON.stringify(query)
+    });
+    
+    log(`[datajud] Status: ${response.status}`);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.json({ ok: false, error: `API retornou ${response.status}`, body: errorText.substring(0, 500), logs });
+    }
+    
+    const data = await response.json();
+    
+    log(`[datajud] Hits: ${data.hits?.total?.value || 0}`);
+    
+    // Extrai processos encontrados
+    const processos = (data.hits?.hits || []).map(hit => {
+      const src = hit._source || {};
+      return {
+        processo: src.numeroProcesso,
+        classe: src.classe?.nome,
+        assuntos: (src.assuntos || []).map(a => a.nome).join(", "),
+        dataAjuizamento: src.dataAjuizamento,
+        tribunal: src.tribunal,
+        grau: src.grau,
+        orgaoJulgador: src.orgaoJulgador?.nome,
+        // Movimentos relevantes
+        movimentos: (src.movimentos || [])
+          .filter(m => m.nome && /alvará|levantamento|pagamento|liberação|saque/i.test(m.nome))
+          .slice(0, 5)
+          .map(m => ({
+            nome: m.nome,
+            data: m.dataHora
+          }))
+      };
+    });
+    
+    res.json({
+      ok: true,
+      tribunal,
+      termo,
+      totalHits: data.hits?.total?.value || 0,
+      processos,
+      logs
+    });
+    
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e), logs });
+  }
+});
+
 // ===== DJEN (Diário de Justiça Eletrônico Nacional) =====
 const DJEN_URL = "https://comunica.pje.jus.br/";
 const DJEN_API_URL = "https://comunica.pje.jus.br/api/";
