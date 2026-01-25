@@ -72,21 +72,75 @@ const centavosToBRL = (c) => (Math.round(c) / 100).toLocaleString("pt-BR", {
 });
 
 const calcularIdadeDias = (dataStr) => {
-  if (!dataStr) return 9999;
-  const data = new Date(dataStr);
+  if (!dataStr) return null;
+  
+  // Tenta parsear diferentes formatos
+  let data;
+  
+  // Formato: "14/08/2025 13:32" ou "14/08/2025"
+  if (typeof dataStr === 'string' && dataStr.includes('/')) {
+    const partes = dataStr.split(' ')[0].split('/');
+    if (partes.length === 3) {
+      data = new Date(partes[2], partes[1] - 1, partes[0]);
+    }
+  }
+  // Formato ISO
+  else {
+    data = new Date(dataStr);
+  }
+  
+  if (!data || isNaN(data.getTime())) return null;
+  
   const agora = new Date();
   return Math.floor((agora - data) / (1000 * 60 * 60 * 24));
 };
 
+// Converte data BR para ISO
+const dataParaISO = (dataStr) => {
+  if (!dataStr) return null;
+  
+  if (typeof dataStr === 'string' && dataStr.includes('/')) {
+    const [dataParte, horaParte] = dataStr.split(' ');
+    const [dia, mes, ano] = dataParte.split('/');
+    if (horaParte) {
+      return `${ano}-${mes}-${dia}T${horaParte}:00`;
+    }
+    return `${ano}-${mes}-${dia}`;
+  }
+  return dataStr;
+};
+
 const safe = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-// ===== Health =====
-app.get("/", (_req, res) => res.send("TORRE v10.0 — Sistema de Leads Confirmados"));
+// ===== Health & Saude =====
+app.get("/", (_req, res) => res.send("TORRE v10.1 — Sistema de Leads Confirmados"));
+
 app.get("/health", (_req, res) => res.json({ 
   ok: true, 
-  version: "10.0",
+  version: "10.1",
   directDataConfigured: !!DIRECTDATA_TOKEN,
+  infosimplesConfigured: !!INFOSIMPLES_TOKEN,
   now: new Date().toISOString() 
+}));
+
+app.get("/api/saude", (_req, res) => res.json({
+  ok: true,
+  version: "10.1",
+  config: {
+    directData: DIRECTDATA_TOKEN ? "✅ Configurado" : "❌ Aguardando token",
+    infosimples: INFOSIMPLES_TOKEN ? "✅ Configurado" : "❌ Falta token",
+    minScore: MIN_SCORE,
+    minValor: centavosToBRL(MIN_VALOR_CENTAVOS),
+    maxIdadeDias: MAX_IDADE_DIAS
+  },
+  endpoints: [
+    "GET /api/leads?tribunal=TRT15&limite=20&minScore=50&minValor=2000000",
+    "GET /api/dossie?processo=XXXXXXX",
+    "GET /api/telefone?cpf=XXXXXXXXXXX",
+    "POST /api/pdf (body: tribunal, vara, processo, pf_nome, etc)"
+  ],
+  tribunaisDisponiveis: Object.keys(DATAJUD_ENDPOINTS),
+  now: new Date().toISOString()
 }));
 
 // ===== FILTRO TORRE - Análise de Movimentos =====
@@ -226,23 +280,26 @@ function calcularScore(analise, idadeDias, temPFNomeada) {
   // +40 se PF nomeada
   if (temPFNomeada) score += 40;
 
-  // +30 se banco identificado
-  if (analise.banco) score += 30;
+  // +30 se banco identificado (BB ou CEF específico)
+  if (analise.banco === "BB" || analise.banco === "CEF") score += 30;
 
   // +20 se valor extraído
-  if (analise.valorCentavos) score += 20;
+  if (analise.valorCentavos && analise.valorCentavos > 0) score += 20;
 
   // +10 se tem código do alvará
   if (analise.temCodigoAlvara) score += 10;
 
-  // -20 se alvará muito antigo (> 2 anos)
-  if (idadeDias > 730) score -= 20;
-
-  // -10 se muito antigo (> 1 ano)
-  else if (idadeDias > 365) score -= 10;
-
-  // +10 se recente (< 90 dias)
-  if (idadeDias < 90) score += 10;
+  // Ajuste por idade (se disponível)
+  if (idadeDias !== null && idadeDias !== undefined) {
+    // -20 se alvará muito antigo (> 2 anos)
+    if (idadeDias > 730) score -= 20;
+    // -10 se antigo (> 1 ano)
+    else if (idadeDias > 365) score -= 10;
+    // +10 se recente (< 90 dias)
+    else if (idadeDias < 90) score += 10;
+    // +5 se muito recente (< 30 dias)
+    if (idadeDias < 30) score += 5;
+  }
 
   return Math.max(0, Math.min(100, score));
 }
@@ -256,27 +313,27 @@ app.get("/api/leads", async (req, res) => {
     const tribunal = (req.query.tribunal || "TRT15").toUpperCase();
     const limite = Math.min(Number(req.query.limite) || 20, 100);
     const dias = Number(req.query.dias) || 180;
-    const minScore = Number(req.query.minScore) || MIN_SCORE;
+    const minScore = Number(req.query.minScore) || 0; // Removido filtro padrão
     const minValor = Number(req.query.minValor) || 0;
+    const modo = req.query.modo || "trt_pf_core";
 
-    log(`[leads] Buscando no ${tribunal} (últimos ${dias} dias, minScore=${minScore})...`);
+    log(`[leads] Buscando no ${tribunal} (últimos ${dias} dias, modo=${modo})...`);
 
     const endpoint = DATAJUD_ENDPOINTS[tribunal];
     if (!endpoint) {
       return res.status(400).json({ ok: false, error: `Tribunal ${tribunal} não suportado` });
     }
 
-    // Query DataJud
+    // Query DataJud - CORRIGIDA
     const query = {
-      size: limite * 5,
+      size: limite * 10, // Busca mais para compensar filtros
       query: {
         bool: {
           should: [
-            { match_phrase: { "movimentos.nome": "Expedição de documento" } },
-            { match: { "movimentos.complementosTabelados.nome": "Alvará" } },
             { match: { "movimentos.nome": "alvará" } },
             { match: { "movimentos.nome": "levantamento" } },
-            { match_phrase: { "movimentos.nome": "liberação de valores" } },
+            { match: { "movimentos.complementosTabelados.nome": "Alvará" } },
+            { match_phrase: { "movimentos.nome": "Expedição de documento" } },
           ],
           minimum_should_match: 1
         }
@@ -489,12 +546,31 @@ app.get("/api/dossie", async (req, res) => {
     else if (/caixa econ|cef\b/i.test(todosTextos)) analise.banco = "CEF";
 
     const idadeDias = calcularIdadeDias(analise.dataAlvara);
-    const score = calcularScore(analise, idadeDias, beneficiariosPF.length > 0);
+    const score = calcularScore(analise, idadeDias || 0, beneficiariosPF.length > 0);
+
+    // Ticket estimado (usa valor do alvará ou valor da causa)
+    let ticketEstimadoCentavos = analise.valorCentavos;
+    if (!ticketEstimadoCentavos && detalhes.valor_causa) {
+      const matchCausa = String(detalhes.valor_causa).match(/[\d.,]+/);
+      if (matchCausa) {
+        const valorNum = parseFloat(matchCausa[0].replace(/\./g, '').replace(',', '.'));
+        if (!isNaN(valorNum)) ticketEstimadoCentavos = Math.round(valorNum * 100);
+      }
+    }
+
+    // Exclusões avaliadas (para auditoria)
+    const exclusoesAvaliadas = [
+      `saque_efetuado:${movimentosAlvara.some(m => /cumprido|levantado|pago/i.test(m.titulo))}`,
+      `beneficiario_pf:${beneficiariosPF.length > 0}`,
+      `banco_identificado:${!!analise.banco}`,
+      `valor_presente:${!!analise.valorCentavos}`
+    ];
 
     // Monta dossiê
     const dossie = {
       processo: numeroCNJ,
-      tribunal: resultado.trt || "TRT",
+      tribunal: resultado.trt || "TRT15",
+      grau: "G1",
       vara: detalhes.orgao_julgador,
       classe: detalhes.processo?.split(" ")[0],
       valorCausa: detalhes.valor_causa || detalhes.normalizado_valor_causa,
@@ -511,15 +587,21 @@ app.get("/api/dossie", async (req, res) => {
         confirmado: analise.confirmado,
         tipo: analise.tipo,
         data: analise.dataAlvara,
-        banco: analise.banco || "BB/CEF",
+        dataIso: dataParaISO(analise.dataAlvara),
+        banco: analise.banco,
         valor: analise.valor,
         valorCentavos: analise.valorCentavos,
+        temCodigoAlvara: /código|guia|id.*alvará/i.test(todosTextos),
         movimentos: movimentosAlvara.slice(0, 5)
       },
 
       // Métricas
       idadeAlvaraDias: idadeDias,
       score,
+      ticketEstimadoCentavos,
+      
+      // Auditoria
+      exclusoesAvaliadas,
 
       // Status
       status: !analise.confirmado ? "sem_alvara_confirmado"
@@ -533,14 +615,15 @@ app.get("/api/dossie", async (req, res) => {
       },
 
       // Mensagens de Pitch
-      mensagens: gerarMensagensPitch(beneficiariosPF[0], numeroCNJ, analise),
+      mensagens: gerarMensagensPitch(beneficiariosPF[0], numeroCNJ, analise, ticketEstimadoCentavos),
 
       // Contato (a ser preenchido)
       contato: {
-        status: DIRECTDATA_TOKEN ? "pendente" : "aguardando_directdata",
+        status: DIRECTDATA_TOKEN ? "aguardando_enriquecimento" : "aguardando_directdata",
         telefone: null,
         whatsapp: null,
-        email: null
+        email: null,
+        endereco: null
       },
 
       geradoEm: new Date().toISOString()
@@ -556,11 +639,11 @@ app.get("/api/dossie", async (req, res) => {
 });
 
 // ===== Gerar Mensagens de Pitch =====
-function gerarMensagensPitch(beneficiario, processo, analise) {
+function gerarMensagensPitch(beneficiario, processo, analise, ticketCentavos) {
   const nome = beneficiario?.nome || "Sr(a)";
   const primeiroNome = nome.split(' ')[0];
   const banco = analise.banco || "BB/CEF";
-  const valor = analise.valor;
+  const valor = analise.valor || (ticketCentavos ? centavosToBRL(ticketCentavos) : null);
 
   if (!analise.confirmado) {
     return {
