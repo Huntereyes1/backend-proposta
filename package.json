@@ -1,7 +1,7 @@
 {
-  "name": "torre-b2b",
-  "version": "12.0.0",
-  "description": "Sistema de Auditoria de Alvarás B2B para Escritórios de Advocacia",
+  "name": "torre-v13",
+  "version": "13.0.0",
+  "description": "Sistema de Auditoria de Alvarás - DataJud + PJe Manual (100% Gratuito)",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -15,13 +15,6 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": [
-    "alvara",
-    "trabalhista",
-    "auditoria",
-    "escavador",
-    "datajud"
-  ],
   "author": "TORRE Data",
   "license": "UNLICENSED"
 }
