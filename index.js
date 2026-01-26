@@ -717,6 +717,150 @@ app.post("/api/dossie", async (req, res) => {
   }
 });
 
+// ===== POST /api/teaser — Gera preview SEM link (anti-calote) =====
+app.post("/api/teaser", (req, res) => {
+  try {
+    const {
+      processo,
+      tribunal,
+      vara,
+      beneficiarioNome,
+      dataAlvara,
+      movimentoTrecho
+    } = req.body;
+
+    if (!processo) {
+      return res.status(400).json({ ok: false, error: "Campo obrigatório: processo" });
+    }
+
+    // Oculta parte do processo (segurança)
+    const processoOculto = processo.replace(/(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})/, '$1-XX.XXXX.$4.$5.$6');
+    
+    // Oculta parte do nome do beneficiário
+    const benefOculto = beneficiarioNome 
+      ? beneficiarioNome.split(' ').map((p, i) => i === 0 ? p : p[0] + '***').join(' ')
+      : null;
+
+    const teaser = {
+      tipo: "TEASER - Preview de Verificação",
+      aviso: "⚠️ Dados parciais. Dossiê completo liberado após confirmação de pagamento.",
+      
+      dados: {
+        processo: processoOculto,
+        tribunal: tribunal || "TRT",
+        vara: vara || null,
+        beneficiario: benefOculto,
+        dataAlvara: dataAlvara || "Recente",
+        movimento: movimentoTrecho 
+          ? movimentoTrecho.substring(0, 100) + "..."
+          : "Expedição de alvará ao reclamante"
+      },
+
+      // Mensagem pronta pra WhatsApp
+      mensagemWhatsApp: `📋 *PRÉVIA DE VERIFICAÇÃO*
+
+Processo: ${processoOculto}
+Tribunal: ${tribunal || 'TRT'}
+${vara ? `Vara: ${vara}` : ''}
+${benefOculto ? `Beneficiário: ${benefOculto}` : ''}
+Data do alvará: ${dataAlvara || 'Recente'}
+
+Movimento identificado:
+"${movimentoTrecho ? movimentoTrecho.substring(0, 80) + '...' : 'Expedição de alvará ao reclamante...'}"
+
+⚠️ _Dados parciais para conferência._
+_Dossiê completo com link oficial e prova documental: R$ 400_`,
+
+      instrucao: "Envie essa prévia. Só libere o dossiê completo APÓS receber o PIX."
+    };
+
+    res.json({ ok: true, teaser });
+
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// ===== GET /api/abordagem — Fluxo completo de venda =====
+app.get("/api/abordagem", (req, res) => {
+  res.json({
+    ok: true,
+    titulo: "🎯 FLUXO DE VENDA ANTI-CALOTE",
+    
+    etapa1_pitch: {
+      nome: "Primeiro contato",
+      objetivo: "Despertar interesse SEM revelar dados",
+      exemplo: `Bom dia, Dr(a). [NOME]!
+
+Em uma auditoria automática de processos trabalhistas, identifiquei um alvará já expedido em um processo do seu escritório no [TRIBUNAL].
+
+O crédito consta liberado e não há registro de levantamento no sistema.
+
+Posso te enviar os detalhes para conferência?`,
+      regra: "❌ NÃO mande: número do processo, link, valor, nome do cliente"
+    },
+
+    etapa2_teaser: {
+      nome: "Preview de verificação",
+      objetivo: "Provar que é real SEM dar acesso direto",
+      como: "Use POST /api/teaser para gerar",
+      exemplo: "Processo parcial + tribunal + trecho do movimento",
+      regra: "❌ NÃO mande: link do PJe, PDF, print completo"
+    },
+
+    etapa3_cobranca: {
+      nome: "Fechamento",
+      objetivo: "Converter em pagamento",
+      exemplo: `Posso liberar o dossiê completo com:
+✅ Link oficial do processo
+✅ Prova documental do movimento
+✅ Dados do beneficiário
+✅ Data e detalhes do alvará
+
+Valor: R$ 400
+PIX: seupix@torredata.com.br
+
+Envio imediatamente após a confirmação.`,
+      regra: "✅ PIX ANTES, entrega DEPOIS"
+    },
+
+    etapa4_entrega: {
+      nome: "Dossiê completo",
+      objetivo: "Entregar valor máximo",
+      como: "Use POST /api/dossie para gerar HTML completo",
+      conteudo: ["Link PJe direto", "Nome completo do beneficiário", "Nome do advogado", "Data do alvará", "Trecho do movimento oficial"],
+      regra: "✅ Só após PIX confirmado"
+    },
+
+    etapa5_upsell: {
+      nome: "Proposta de recorrência",
+      objetivo: "Transformar em cliente fixo",
+      quando: "Após ele confirmar que deu certo",
+      exemplo: `Fico feliz que ajudou, doutor!
+
+Esse tipo de crédito esquecido acontece com frequência.
+
+Se quiser, posso monitorar automaticamente os processos do seu escritório e te avisar sempre que sair dinheiro.
+
+Assinatura mensal: R$ 1.200
+Inclui: alertas ilimitados + dossiês prioritários`,
+      meta: "30-50% aceitam após primeiro sucesso"
+    },
+
+    precos_sugeridos: {
+      dossie_avulso: "R$ 300 a R$ 500",
+      assinatura_mensal: "R$ 1.000 a R$ 1.500",
+      percentual_exito: "5% a 10% (após confiança)"
+    },
+
+    meta_faturamento: {
+      conservador: "5 dossiês/mês × R$ 400 = R$ 2.000",
+      moderado: "10 dossiês + 3 assinantes = R$ 7.600",
+      agressivo: "20 dossiês + 10 assinantes = R$ 20.000"
+    }
+  });
+});
+
 // ===== Start =====
 app.listen(PORT, () => {
   console.log(`\n🚀 TORRE v13.0 rodando na porta ${PORT}`);
