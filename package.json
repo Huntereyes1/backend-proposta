@@ -1,20 +1,27 @@
 {
-  "name": "torre-dejt",
+  "name": "torre-b2b",
+  "version": "12.0.0",
+  "description": "Sistema de Auditoria de Alvarás B2B para Escritórios de Advocacia",
   "type": "module",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.js"
-  },
-  "engines": {
-    "node": ">=20"
+    "start": "node index.js",
+    "dev": "node --watch index.js"
   },
   "dependencies": {
-    "archiver": "^7.0.1",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "morgan": "^1.10.0",
-    "p-limit": "^5.0.0",
-    "pdf-parse": "^1.1.4",
-    "puppeteer": "^23.11.1",
-    "qrcode": "^1.5.3"
-  }
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "alvara",
+    "trabalhista",
+    "auditoria",
+    "escavador",
+    "datajud"
+  ],
+  "author": "TORRE Data",
+  "license": "UNLICENSED"
 }
