@@ -90,20 +90,29 @@ function analisarMovimentosDataJud(movimentos) {
     return { temAlvara: false, movimento: null };
   }
 
-  // Palavras-chave de alvará
+  // Palavras-chave de alvará (AMPLIADAS)
   const palavrasAlvara = [
     'alvará', 'alvara',
-    'expedição de alvará', 'expedicao de alvara',
-    'liberação de valores', 'liberacao de valores',
-    'levantamento de valores', 'levantamento de depósito',
-    'pagamento de rpv', 'pagamento de precatório',
-    'expedido alvará', 'expedido o alvará'
+    'expedição', 'expedicao',
+    'liberação', 'liberacao',
+    'levantamento',
+    'pagamento',
+    'rpv', 'precatório', 'precatorio',
+    'expedido', 
+    'valor', 'valores',
+    'crédito', 'credito',
+    'depósito', 'deposito',
+    'guia de levantamento',
+    'ordem de pagamento'
   ];
 
-  // Palavras que indicam saque já feito (descarta)
-  const palavrasSaque = [
-    'cumprido', 'levantado', 'sacado', 'quitado',
-    'transferido', 'creditado', 'pago ao'
+  // Palavras que indicam saque já feito (descarta) - SÓ descarta se CERTEZA
+  const palavrasSaqueConfirmado = [
+    'alvará cumprido',
+    'levantamento efetuado',
+    'valor sacado',
+    'quitação total',
+    'pagamento realizado ao'
   ];
 
   // Procura movimento de alvará (mais recente primeiro)
@@ -119,15 +128,15 @@ function analisarMovimentosDataJud(movimentos) {
     const complementoTexto = complementos.map(c => (c.nome || '').toLowerCase()).join(' ');
     const textoCompleto = `${nome} ${complementoTexto}`;
 
-    // Verifica se é movimento de alvará
+    // Verifica se já foi sacado COM CERTEZA
+    const jaSacadoConfirmado = palavrasSaqueConfirmado.some(p => textoCompleto.includes(p));
+    if (jaSacadoConfirmado) continue;
+
+    // Verifica se é movimento de alvará/liberação (MAIS PERMISSIVO)
     const ehAlvara = palavrasAlvara.some(p => textoCompleto.includes(p));
     if (!ehAlvara) continue;
 
-    // Verifica se já foi sacado
-    const jaSacado = palavrasSaque.some(p => textoCompleto.includes(p));
-    if (jaSacado) continue;
-
-    // ENCONTROU ALVARÁ VÁLIDO!
+    // ENCONTROU POSSÍVEL ALVARÁ!
     return {
       temAlvara: true,
       movimento: {
