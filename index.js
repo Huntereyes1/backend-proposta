@@ -812,34 +812,22 @@ app.get("/api/minerar-honorarios", async (req, res) => {
       });
     }
 
-    // Query DataJud - busca honorários COM alvará expedido (PRONTO PRA SACAR)
+    // Query DataJud - busca ESPECIFICAMENTE processos de HONORÁRIOS DO ADVOGADO
     const query = {
       size: limite,
       from: pagina * limite,
       query: {
         bool: {
-          // DEVE ter alvará/liberação
-          must: [
-            {
-              bool: {
-                should: [
-                  { match_phrase: { "movimentos.nome": "expedição de alvará" } },
-                  { match_phrase: { "movimentos.nome": "alvará" } },
-                  { match_phrase: { "movimentos.nome": "liberação de valores" } },
-                  { match_phrase: { "movimentos.nome": "levantamento" } },
-                  { match: { "movimentos.complementosTabelados.nome": "Alvará" } },
-                ],
-                minimum_should_match: 1
-              }
-            }
-          ],
-          // E DEVE ter menção a honorários
           should: [
+            // Assuntos relacionados a honorários
+            { match_phrase: { "assuntos.nome": "Honorários" } },
+            { match_phrase: { "assuntos.nome": "Honorários Advocatícios" } },
+            { match_phrase: { "assuntos.nome": "Honorários de Sucumbência" } },
+            { match_phrase: { "assuntos.nome": "Honorários na Justiça do Trabalho" } },
+            // Movimentos de honorários
             { match_phrase: { "movimentos.nome": "honorários" } },
             { match_phrase: { "movimentos.nome": "sucumbência" } },
             { match: { "movimentos.complementosTabelados.nome": "Honorários" } },
-            { match: { "assuntos.nome": "Honorários" } },
-            { match_phrase: { "classe.nome": "Cumprimento de Sentença" } },
           ],
           minimum_should_match: 1
         }
@@ -883,14 +871,27 @@ app.get("/api/minerar-honorarios", async (req, res) => {
         continue;
       }
 
-      // Analisa movimentos para encontrar honorários COM ALVARÁ
-      const analiseHonorarios = analisarMovimentosHonorarios(src.movimentos);
+      // Verifica se menciona HONORÁRIOS nos assuntos ou movimentos
+      const assuntosTexto = (src.assuntos || []).map(a => (a.nome || '').toLowerCase()).join(' ');
+      const movimentosTexto = (src.movimentos || []).map(m => {
+        const nome = (m.nome || '').toLowerCase();
+        const compl = (m.complementosTabelados || []).map(c => (c.nome || '').toLowerCase()).join(' ');
+        return `${nome} ${compl}`;
+      }).join(' ');
       
-      // SÓ ACEITA SE TIVER ALVARÁ (dinheiro pronto pra sacar!)
-      if (!analiseHonorarios.temAlvara) {
+      const textoCompleto = `${assuntosTexto} ${movimentosTexto}`;
+      const mencionaHonorarios = textoCompleto.includes('honorário') || 
+                                  textoCompleto.includes('honorario') ||
+                                  textoCompleto.includes('sucumbência') ||
+                                  textoCompleto.includes('sucumbencia');
+
+      if (!mencionaHonorarios) {
         descartadosSemHonorarios++;
         continue;
       }
+
+      // Verifica se tem alvará (bônus, não obrigatório)
+      const analiseAlvara = analisarMovimentosDataJud(src.movimentos);
 
       leads.push({
         // Identificação
@@ -901,28 +902,19 @@ app.get("/api/minerar-honorarios", async (req, res) => {
         
         // Vara/Órgão
         vara: src.orgaoJulgador?.nome || null,
-        codigoVara: src.orgaoJulgador?.codigo || null,
         grau: src.grau,
         
         // Classe/Assunto
         classe: src.classe?.nome || null,
-        assuntos: (src.assuntos || []).slice(0, 3).map(a => a.nome),
+        assuntos: (src.assuntos || []).slice(0, 5).map(a => a.nome),
         
         // Datas
-        dataAjuizamento: formatarData(src.dataAjuizamento),
         dataUltimaAtualizacao: formatarData(src.dataHoraUltimaAtualizacao),
         idadeDias,
         
-        // Honorários COM ALVARÁ
-        honorarios: {
-          prontoParaSacar: true,
-          tipo: analiseHonorarios.tipo,
-          temHonorarios: analiseHonorarios.temHonorarios,
-          temAlvara: analiseHonorarios.temAlvara,
-          movimentoAlvara: analiseHonorarios.movimentoAlvara,
-          movimentoHonorarios: analiseHonorarios.movimentoHonorarios,
-          dataAlvara: analiseHonorarios.movimentoAlvara?.dataFormatada
-        },
+        // Tem alvará? (bônus)
+        temAlvara: analiseAlvara.temAlvara,
+        alvara: analiseAlvara.movimento,
         
         // Links
         links: {
@@ -930,41 +922,43 @@ app.get("/api/minerar-honorarios", async (req, res) => {
           pjeAlternativo: `https://pje.trt${tribunal.replace('TRT', '')}.jus.br/primeirograu/Processo/ConsultaProcesso/listView.seam?numeroProcesso=${processoNum}`
         },
         
-        // Campos para preencher manualmente
+        // Campos para preencher
         enriquecimento: {
           advogadoNome: null,
           advogadoOAB: null,
-          escritorio: null,
           valorHonorarios: null,
           telefone: null,
-          email: null,
-          observacoes: null
+          email: null
         },
         
-        // Status
         status: "pendente_enriquecimento",
-        tipoLead: "HONORARIOS_PRONTO_SACAR"
+        tipoLead: "HONORARIOS_ADVOGADO"
       });
     }
 
-    // Ordena por mais recente
-    leads.sort((a, b) => (a.idadeDias || 999) - (b.idadeDias || 999));
+    // Ordena: primeiro os que TÊM alvará (dinheiro pronto), depois por data
+    leads.sort((a, b) => {
+      if (a.temAlvara && !b.temAlvara) return -1;
+      if (!a.temAlvara && b.temAlvara) return 1;
+      return (a.idadeDias || 999) - (b.idadeDias || 999);
+    });
 
-    log(`[HONORÁRIOS] ✅ ${leads.length} leads válidos | ${descartadosIdade} muito antigos | ${descartadosSemHonorarios} sem honorários confirmado`);
+    log(`[HONORÁRIOS] ✅ ${leads.length} leads de honorários | ${leads.filter(l => l.temAlvara).length} com alvará | ${descartadosSemHonorarios} sem menção a honorários`);
 
     res.json({
       ok: true,
       tribunal,
       estado: tribunalInfo.estado,
       custoAPI: "R$ 0,00 (GRÁTIS)",
-      tipoMineracao: "HONORÁRIOS COM ALVARÁ (PRONTO PRA SACAR)",
+      tipoMineracao: "🎯 HONORÁRIOS DO ADVOGADO",
       
       estatisticas: {
         totalDataJud: total,
         retornados: hits.length,
         leadsValidos: leads.length,
+        comAlvara: leads.filter(l => l.temAlvara).length,
         descartadosIdade,
-        descartadosSemAlvara: descartadosSemHonorarios
+        descartadosSemHonorarios
       },
       
       paginacao: {
@@ -974,17 +968,18 @@ app.get("/api/minerar-honorarios", async (req, res) => {
       },
       
       instrucoes: {
-        passo1: "Abra o link PJe de cada lead",
-        passo2: "Confirme: tem ALVARÁ expedido (dinheiro pronto)",
-        passo3: "Verifique: a quem pertence o alvará (advogado ou parte)",
-        passo4: "Copie: nome do advogado, OAB, valor do alvará",
-        passo5: "Use POST /api/pitch-honorarios para gerar mensagem"
+        passo1: "Leads com ⭐ temAlvara=true são PRIORIDADE (dinheiro liberado!)",
+        passo2: "Abra o link PJe e confirme que é honorário DO ADVOGADO",
+        passo3: "Copie: nome do advogado, OAB, valor",
+        passo4: "Busque contato no Google/LinkedIn",
+        passo5: "Mande o pitch - dinheiro é DELE!"
       },
       
-      pitch_modelo: {
-        exemplo: "Dr(a). [NOME], identifiquei um alvará de honorários expedido no processo [X] pronto para saque. O valor é seu. Posso enviar o dossiê?",
-        diferencial: "DINHEIRO JÁ LIBERADO - advogado só precisa ir ao banco!"
-      },
+      pitch_modelo: `Bom dia, Dr(a). [NOME]!
+
+Identifiquei que você tem honorários de sucumbência no processo [X] no ${tribunal}.
+
+Esse valor é SEU por direito. Posso enviar o dossiê completo?`,
       
       leads,
       logs
